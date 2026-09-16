@@ -1,0 +1,11 @@
+{
+  "base_url": "https://vyoma-api.edmingle.com/nuSource/api/v1",
+  "filter_key": "geoLocationInfo.country",
+  "sort_order": -1,
+  "per_page": 500,
+  "start_date": "01-01-2020T00:00:00+05:30",
+  "end_date": "19-08-2026T23:59:59+05:30",
+  "rate_limit_per_minute": 30,
+  "output_csv": "user_country_list.csv",
+  "checkpoint_file": "user_country_list_checkpoint.json"
+}

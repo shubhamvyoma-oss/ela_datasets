@@ -1,0 +1,112 @@
+# =============================================================
+# config.yaml  —  Edmingle Attendance Pipeline
+# =============================================================
+#
+# NOTE: Edmingle API credentials (api_key / organization_id) now
+# live in the shared ../credentials.yaml (one per ela_datasets/
+# install, used by every pipeline). Email/SMTP settings now live
+# in notifications.yaml (per-pipeline, not shared). This file
+# still contains request/path/behaviour settings -- keep it out
+# of version control regardless.
+#
+# USAGE: Pass path explicitly if not in the same folder as the
+# script: python master_attendance_pipeline.py --config /path/to/config.yaml
+# =============================================================
+
+
+# ── API ──────────────────────────────────────────────────────
+api:
+  url:    "https://vyoma-api.edmingle.com/nuSource/api/v1/report/csv"
+
+  # Request timeout. Edmingle can be slow on large date windows.
+  timeout_seconds: 60
+
+  # Sleep between day calls to stay under the 25 req/min hard limit.
+  # 2.5s = 24 req/min  — a safe margin below the ceiling.
+  rate_limit_sleep_seconds: 2.5
+
+  # Retry settings for transient failures (429, 5xx, timeouts, drops).
+  # 401 / 403 / 404 are NEVER retried — they stop the run immediately
+  # and send a critical email, because retrying won't fix a config problem.
+  max_retries: 3
+  retry_backoff_base_seconds: 5     # retry 1 ≈ 5s, retry 2 ≈ 10s, retry 3 ≈ 20s
+  retry_backoff_max_seconds: 120    # never back off longer than 2 minutes
+  retry_jitter_seconds: 1.0         # random jitter added to backoff (avoids thundering herd)
+
+  # Stop the entire run if this many consecutive dates all fail.
+  # Protects against hammering a completely broken endpoint.
+  max_consecutive_errors: 3
+
+  # One lightweight validation call is made before the main loop starts.
+  # This catches bad API keys, wrong ORGID, or network issues up front.
+  validate_on_startup: true
+
+
+# ── FILE PATHS ───────────────────────────────────────────────
+# All paths below are relative to THIS SCRIPT'S OWN FOLDER (attendance/),
+# not the current working directory the script happens to be invoked
+# from. attendance.py resolves any relative value here against
+# Path(__file__).resolve().parent before use, so output always lands
+# next to attendance.py regardless of how/where it's launched from
+# (cron, Task Scheduler, a wrapper .bat that cd's elsewhere, etc).
+# An absolute path is still honoured as-is (e.g. to point at a
+# dedicated data drive).
+paths:
+  # Final output folder — summary CSVs and combined raw CSV go here.
+  # Relative to this script's folder (scripts/), so "../output" resolves
+  # to attendance/output/.
+  output_folder: "../output"
+
+  # Log files rotate daily; 30 days are retained.
+  log_folder: "../output/logs"
+
+  # Per-day staging CSVs (one file per successfully fetched date).
+  # This is what makes the run resumable after a crash or Ctrl+C.
+  # Defaults to {output_folder}/staging if not set.
+  # staging_folder: "./staging"
+
+  # Checkpoint JSON: tracks per-date success/failure across runs.
+  # Defaults to {output_folder}/pipeline_checkpoint.json
+  # checkpoint_file: "./pipeline_checkpoint.json"
+
+  # Lock file: prevents two runs from executing simultaneously.
+  # Defaults to {output_folder}/pipeline.lock
+  # lock_file: "./pipeline.lock"
+
+
+# ── PIPELINE BEHAVIOUR ───────────────────────────────────────
+pipeline:
+  # How many days to look back if --date / --from / --to are all omitted.
+  default_lookback_days: 30
+
+  # Save the combined raw CSV (all dates merged into one big file).
+  # For a 546-day run this is ~150 MB. Set false to keep only staging files.
+  save_combined_raw_csv: true
+
+  # Delete per-day staging files once the combined CSV is written.
+  # Keep false during testing. Once you're confident, set true to save disk space.
+  cleanup_staging_after_combine: false
+
+  # Minimum free disk space (MB) required before the run starts.
+  min_free_disk_mb: 1024
+
+  # Confirmed on real report_type=55 export: single letter "P" / "A" / "-"
+  present_value: "P"
+
+  # attendance_id = one session occurrence. class_Id = subject/stream (DO NOT USE).
+  # Confirmed: class_Id caused 23 of 28 batches to silently undercount sessions.
+  session_id_column: "attendance_id"
+
+  # Date / time formats as they appear in the Edmingle export.
+  date_format: "%d %b %Y"    # e.g. "03 Jan 2026"
+  time_format: "%I:%M %p"    # e.g. "7:00 AM"
+
+  # studentRating is EXACTLY 0 in 100% of real rows — Edmingle's "not rated"
+  # sentinel, not a genuine score. Excluded the same way nulls/blanks are.
+  treat_zero_rating_as_missing: true
+
+  # Optionally exclude students whose studentBatchStatus is in this list.
+  # Real export: "Active" (99.3%), "Archived" (0.7%). NOT "Cancelled".
+  exclude_inactive_students: false
+  excluded_status_values:
+    - "Archived"

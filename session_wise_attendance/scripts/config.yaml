@@ -1,0 +1,40 @@
+# ==========================================================================
+# config.yaml — Vyoma attendance pipeline configuration
+# Edmingle API credentials (api_key/org_id/orgid/institute_id) and the SMTP
+# block have moved out of this file:
+#   - api_key / org_id / orgid / institute_id now live in the shared
+#     ../credentials.yaml (single source of truth for all ela_datasets/
+#     pipelines), and are merged in automatically by pipeline_common.load_config().
+#   - smtp settings now live in notifications.yaml (this pipeline's own
+#     recipients/channels config), also merged in automatically.
+# ==========================================================================
+
+# --- Base URL --------------------------------------------------------------
+base_url: "https://vyoma-api.edmingle.com/nuSource/api/v1"
+
+# --- Output paths -----------------------------------------------------------
+# "." means "this pipeline's own folder" (session_wise_attendance/). A
+# relative output_folder is resolved by pipeline_common.resolve_output_folder()
+# against the SCRIPT's own location (Path(__file__).resolve().parent), NOT
+# the process's current working directory -- so output always lands next to
+# the script even if it's invoked from elsewhere (e.g. an absolute path from
+# Task Scheduler or a different cwd). checkpoint_folder / log_folder below are
+# defined but currently unused dead config -- see PIPELINE.md's "Known open
+# items" (checkpointing is done via the output CSV itself; real logs go to
+# logs/<stage_name>/, not this configured log_folder).
+output_folder: "."
+checkpoint_folder: ".\\checkpoints\\"
+log_folder: ".\\logs\\"
+
+# --- Pipeline behavior toggles ----------------------------------------------
+roster_gap_filler_enabled: false   # /masterbatch/classstudents fallback for zero-session batches
+exclude_archived_students: true    # fixed default per master_attendance_pipeline.py
+
+# --- Date handling -----------------------------------------------------------
+timezone: "Asia/Kolkata"           # IST midnight boundaries, not UTC
+
+# --- Cross-validation script settings ----------------------------------------
+crossvalidation:
+  default_class_id: null           # set an int to always scope to one subject/stream
+  default_start_date: "2023-09-21" # earliest known session in current dataset
+  output_filename: "attendance_spotcheck.csv"

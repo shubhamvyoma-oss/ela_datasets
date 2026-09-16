@@ -1,0 +1,44 @@
+"""
+edmingle_constants.py
+
+Shared constants used by every other edmingle_*.py module. Nothing in here
+has side effects — just plain values.
+"""
+
+BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/reports/enrollment"
+
+DATE_FMT = "%d-%m-%Y"  # DD-MM-YYYY, the format Edmingle's API expects
+
+# Column order for the output CSV. Matches the fields Edmingle returns in
+# "studentlist" for report_details_type=3. If Edmingle adds/removes fields,
+# update this list to match — unknown fields are dropped, missing fields are
+# written as blank rather than crashing the run.
+FIELDS = [
+    "enrollment_id",
+    "enrollment_day",
+    "user_id",
+    "name",
+    "email",
+    "contact_number",
+    "contact_number_country_id",
+    "state",
+    "registration_number",
+    "learner_type",
+    "enrollment_mode",
+    "enrollment_status",
+    "bundle_id",
+    "bundle_name",
+    "batch_ids",
+    "batches",
+    "product_type",
+    "product_type_label",
+    "platform_type",
+    "enrollment_expiration_date",
+    "shipping_details_json",
+    "preferred_categories",
+]
+
+# Permanent: retrying will never fix these (bad key, bad org id, wrong URL).
+# Transient: worth retrying with backoff (or, for 429, a longer cool-down).
+PERMANENT_HTTP_STATUSES = {400, 401, 403, 404}
+TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}

@@ -1,0 +1,26 @@
+# Secrets -- never commit these. credentials.yaml holds the live Edmingle
+# API key + tutor login password shared by every pipeline; each
+# notifications.yaml holds an SMTP app password for that pipeline's email
+# alerts.
+credentials.yaml
+**/notifications.yaml
+
+# Generated output -- CSVs, xlsx, logs, checkpoint/chunk/state JSON files.
+# Every pipeline now writes exclusively into its own output/ folder (see
+# each folder's README "Folder layout" section), so excluding output/
+# everywhere keeps generated data out of git without needing a file-by-file
+# list.
+**/output/
+
+# Shared bytecode cache (see edmingle_api_key_generator/README.md) -- pure
+# build artifact, never something to version.
+.pycache/
+**/__pycache__/
+*.pyc
+
+# Out of scope for this repo per prior instruction ("skip experiments/").
+experiments/
+
+# OS cruft
+.DS_Store
+Thumbs.db

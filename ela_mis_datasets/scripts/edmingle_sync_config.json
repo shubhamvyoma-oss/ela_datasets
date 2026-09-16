@@ -1,0 +1,20 @@
+{
+  "overlap_pages": 3,
+  "students_per_page": 500,
+  "max_calls_per_minute": 30,
+  "request_timeout_seconds": 30,
+  "initial_retry_delay_seconds": 5,
+  "maximum_retry_delay_seconds": 300,
+  "rate_limit_block_seconds": 1800,
+  "files": {
+    "student_master": "edmingle_students.csv",
+    "course_master": "edmingle_course_enrollments.csv",
+    "state": "edmingle_sync_state.json",
+    "log": "edmingle_sync.log",
+    "course_progress": "edmingle_course_enrollments.in_progress.csv",
+    "course_snapshot": "edmingle_course_students_snapshot.csv",
+    "legacy_student_master": "students_data_2.csv",
+    "legacy_course_master": "studentCoursesEnrolled.csv",
+    "legacy_page_state": "PageNo.txt"
+  }
+}
