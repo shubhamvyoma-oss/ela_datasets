@@ -39,6 +39,8 @@ cleanly rather than re-fetching or duplicating data.
 
 import argparse
 import csv
+import json
+import logging
 import os
 import sys
 import time
@@ -54,16 +56,44 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common import RollingRateLimiter, atomic_write_json
+
 from edmingle_api import PermanentAPIError, fetch_page
-from edmingle_checkpoint import load_checkpoint, save_checkpoint
 from edmingle_chunker import load_or_create_chunk_plan
 from edmingle_config import load_config, send_mail
 from edmingle_constants import FIELDS
 from edmingle_io_utils import format_duration, truncate_to_offset
-from edmingle_logger import setup_logging
-from edmingle_rate_limiter import RollingRateLimiter
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def load_checkpoint(path: Path) -> dict | None:
+    """Was edmingle_checkpoint.py -- inlined, it was two functions wrapping
+    a single atomic_write_json call."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def save_checkpoint(path: Path, data: dict) -> None:
+    atomic_write_json(path, data)
+
+
+def setup_logging(log_path: Path) -> logging.Logger:
+    """Was edmingle_logger.py -- inlined; logging.basicConfig covers what
+    the hand-rolled handler setup did."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.FileHandler(log_path), logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
+    return logging.getLogger("edmingle_export")
 
 
 def build_default_output_name(start_date: str, end_date: str) -> str:

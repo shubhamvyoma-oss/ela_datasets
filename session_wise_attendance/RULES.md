@@ -6,7 +6,7 @@ The definitive reference for **what data gets included, excluded, or derived** a
 
 ## Stage 1 — Course Catalog
 
-**Scripts:** `build_course_catalog.py` (primary) / `build_course_catalog_alt.py` (backup — can drift from primary, don't treat as authoritative)
+**Scripts:** `build_course_catalog.py`
 **Output:** `course_catalog.csv`
 
 - **Batch status inclusion:** only batches with status **Active** or **Completed** are fetched. **Archived batches are never fetched at all** — not filtered out after the fact, simply never requested.

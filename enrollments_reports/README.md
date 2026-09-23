@@ -14,9 +14,11 @@ where it left off instead of re-fetching data or duplicating rows.
 This folder is split into two subfolders:
 
 - `scripts/` -- all source code and config: `edmingle_export.py` (the
-  orchestrator/entry point), `edmingle_config.py`, `edmingle_constants.py`,
-  `edmingle_chunker.py`, `edmingle_io_utils.py`, `edmingle_checkpoint.py`,
-  `edmingle_rate_limiter.py`, `edmingle_api.py`, `edmingle_logger.py`,
+  orchestrator/entry point -- also holds checkpoint load/save and log setup,
+  inlined from the former `edmingle_checkpoint.py`/`edmingle_logger.py`,
+  each of which was a few lines wrapping a single stdlib/helper call),
+  `edmingle_config.py`, `edmingle_constants.py`, `edmingle_chunker.py`,
+  `edmingle_io_utils.py`, `edmingle_rate_limiter.py`, `edmingle_api.py`,
   `edmingle_config.json`, `edmingle_config.json.example`,
   `edmingle_watchdog.sh`, and `notifications.yaml`. Run everything from
   inside `scripts/`.
@@ -43,9 +45,9 @@ local import) instead of a separate `__pycache__` folder per pipeline.
    `has_more_page` is false).
 4. Each page's rows are written to the output CSV immediately, then the file
    is flushed and `fsync`'d to disk.
-5. After every page write, `edmingle_checkpoint.py` saves progress
-   (`.checkpoint.json`): which chunk/page was last completed, total rows
-   written so far, and the exact CSV byte offset at that point.
+5. After every page write, `save_checkpoint()` (in `edmingle_export.py`)
+   saves progress (`.checkpoint.json`): which chunk/page was last completed,
+   total rows written so far, and the exact CSV byte offset at that point.
 6. If interrupted and restarted, `edmingle_io_utils.py`'s
    `truncate_to_offset()` cuts the CSV back to the last checkpointed byte
    offset before resuming, discarding any partially-written (torn) row a
@@ -93,6 +95,9 @@ local import) instead of a separate `__pycache__` folder per pipeline.
   process.
 
 ## Configuration
+
+Credentials/notifications loading, the rate limiter, and the atomic-write helpers below now come from the shared `../../common.py` (see its docstring) rather than pipeline-local copies -- `edmingle_config.py` and `edmingle_io_utils.py` keep the same function names/signatures for backward compatibility, just delegating internally.
+
 - **`../../credentials.yaml`** (shared across all `ela_datasets/` pipelines):
   `edmingle.api_key`, `edmingle.organization_id`. Loaded by
   `edmingle_config.py`'s `load_credentials()`; the script exits with an

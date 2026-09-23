@@ -61,7 +61,6 @@ import json
 import os
 import sys
 import time
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -73,6 +72,10 @@ from zoneinfo import ZoneInfo
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
+from common import RollingRateLimiter
 
 try:
     import requests
@@ -150,9 +153,7 @@ def load_config(config_path: Path) -> dict:
     # (relative to this script's directory) instead of keeping its own copy.
     if not CREDENTIALS_PATH.exists():
         sys.exit(f"Shared credentials file not found: {CREDENTIALS_PATH}")
-    with open(CREDENTIALS_PATH, "r", encoding="utf-8") as f:
-        credentials = yaml.safe_load(f) or {}
-    edmingle_creds = credentials.get("edmingle", {}) or {}
+    edmingle_creds = common.load_credentials(CREDENTIALS_PATH)
     cfg["apikey"] = edmingle_creds.get("api_key")
     cfg["orgid"] = edmingle_creds.get("organization_id")
 
@@ -175,25 +176,6 @@ def load_config(config_path: Path) -> dict:
 # --------------------------------------------------------------------------
 # Rate limiter (sliding window, 30/min default)
 # --------------------------------------------------------------------------
-
-class RollingRateLimiter:
-    def __init__(self, max_calls_per_minute: int):
-        self.max_calls = max_calls_per_minute
-        self.calls = deque()
-
-    def wait_if_needed(self):
-        now = time.monotonic()
-        while self.calls and now - self.calls[0] > 60:
-            self.calls.popleft()
-        if len(self.calls) >= self.max_calls:
-            sleep_for = 60 - (now - self.calls[0]) + 0.05
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-        self.calls.append(time.monotonic())
-
-    def reset(self):
-        self.calls.clear()
-
 
 FILE_IO_MAX_RETRIES = 6
 FILE_IO_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
@@ -320,7 +302,7 @@ def fetch_page(session, base_url, apikey, orgid, filter_key, sort_order,
     attempt = 0
     while attempt < MAX_RETRIES_PER_PAGE:
         attempt += 1
-        rate_limiter.wait_if_needed()
+        rate_limiter.acquire()
         try:
             resp = session.get(url, headers=headers, params=params,
                                 timeout=REQUEST_TIMEOUT_SECONDS)
@@ -381,7 +363,7 @@ def run_collection(cfg: dict, script_dir: Path):
         # the header we just wrote gets wiped.
         checkpoint["csv_byte_offset"] = csv_path.stat().st_size
 
-    rate_limiter = RollingRateLimiter(cfg["rate_limit_per_minute"])
+    rate_limiter = RollingRateLimiter(cfg["rate_limit_per_minute"], window_seconds=60.0)
     session = requests.Session()
 
     page = checkpoint["last_completed_page"] + 1

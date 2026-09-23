@@ -16,14 +16,11 @@ Each stage's output CSV is the next stage's input, so **they must be run in that
 
 This folder is split into two subfolders:
 
-- `scripts/` -- all source code and config: `pipeline_common.py`, the 5
-  entry-point scripts (`build_course_catalog.py`, `build_course_catalog_alt.py`,
-  `resolve_class_ids.py`, `build_session_attendance.py`,
-  `attendance_crossvalidation.py`), `config.yaml`, `notifications.yaml`,
-  `tests/` (the unit test suite -- see Tests below), and `New folder/` (old
-  leftover/duplicate scratch scripts, relocated as-is; not part of the
-  pipeline, don't treat it as authoritative). Run everything from inside
-  `scripts/`.
+- `scripts/` -- all source code and config: `pipeline_common.py`, the 4
+  entry-point scripts (`build_course_catalog.py`, `resolve_class_ids.py`,
+  `build_session_attendance.py`, `attendance_crossvalidation.py`),
+  `config.yaml`, `notifications.yaml`, and `tests/` (the unit test suite --
+  see Tests below). Run everything from inside `scripts/`.
 - `output/` -- everything the scripts generate: `course_catalog.csv`,
   `class_id_lookup.csv`, `session_wise_attendance_data.csv`,
   `attendance_spotcheck.csv`, `master_attendance.csv`, per-run `.log` files,
@@ -62,8 +59,6 @@ One `class_id` can be broadcast/shared across multiple `batch_id`s (surfaced via
   - **`bundle_enrollment_count`** = sum of `batch_enrollment_count` (`admitted_students`) across every batch in a bundle, broadcast back onto every row of that bundle.
   - **Catalogue-only bundles** (no batch at all) still get a row with `Has_Batch = 0`, so the full course list is preserved even for courses with nothing currently scheduled.
   - No row-level resume — `Is_Latest_Batch` and `bundle_enrollment_count` are global aggregates that need the complete fetched dataset before any row can be written, so the output CSV is written once, atomically, after every rule above is applied.
-- **Note:** `build_course_catalog_alt.py` exists as a documented non-primary backup (same job, driven from `/short/masterbatch` alone, plus its own content-keyword exclusion filter for `test`/`flipbook`/`audio` names). It can drift from the primary script — **do not treat it as authoritative**; only `build_course_catalog.py`'s output feeds Stage 2.
-
 ## Stage 2: resolve_class_ids.py -> class_id_lookup.csv
 
 - **Endpoint:** `GET {base_url}/masterbatch/{batch_id}`
@@ -164,7 +159,6 @@ Per PIPELINE.md, this was last known to be 29 tests, all passing. Run the suite 
 
 ## Known limitations / things to watch for
 
-- **Two catalog builders can drift.** `build_course_catalog_alt.py` is a simpler backup with its own content-keyword exclusion filter the primary script doesn't have — it is not wired into Stage 2 and should not be treated as a source of truth.
 - **Stage 1 has no row-level resume.** `Is_Latest_Batch` and `bundle_enrollment_count` are global aggregates that require the complete fetched dataset, so a crash mid-fetch means the whole run restarts (Stages 2 & 3 both checkpoint against their output CSV and resume automatically).
 - **`checkpoint_folder` and `log_folder` in `config.yaml` are confirmed dead config** — verified against the current code: neither key is referenced anywhere in `pipeline_common.py` or any of the 5 scripts. Checkpointing is done by re-reading the output CSV itself (Stages 2 & 3) or writing atomically at the end (Stage 1); real per-run logs always go to `logs/<stage_name>/<stage_name>_<timestamp>.log` (hardcoded relative to the script's folder), never to the configured `log_folder`.
 - **Output path resolution is already correctly anchored.** `pipeline_common.resolve_output_folder()` resolves a relative `output_folder` against `<script's folder>/../output` (i.e. `scripts/../output`, this pipeline's `output/` subfolder), not the process's current working directory — confirmed by reading the code and by a functional check (calling `resolve_output_folder({'output_folder': '.'}, <absolute script path>)` from an unrelated cwd still returns the `session_wise_attendance/output/` folder). So output always lands in `output/` even if a script is ever invoked via an absolute path from a different working directory (e.g. Task Scheduler). `PipelineRunLogger` anchors its `logs/` directory the same way, so per-run logs land in `output/logs/<stage_name>/`, not next to the scripts.

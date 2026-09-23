@@ -1,33 +1,3 @@
-# Data Analysis Libraries
 pandas
-numpy
-scikit-learn
-pyarrow
-
-# Data Visualization
-matplotlib
-plotly
-
-# Excel File Support
-openpyxl
-xlsxwriter
-
-# HTTP/API Requests
 requests
-
-# Configuration Files
 PyYAML
-python-dotenv
-
-
-# PostgreSQL Database
-psycopg2-binary
-sqlalchemy
-
-# Jupyter Development
-jupyter
-ipykernel
-
-# Utilities
-tqdm
-tabulate

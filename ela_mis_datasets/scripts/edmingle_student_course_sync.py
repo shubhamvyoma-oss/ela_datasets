@@ -257,20 +257,7 @@ def run_startup_checks(config: dict[str, Any]) -> None:
     print("  VYOMA EDMINGLE SYNC — STARTUP CHECKS")
     print("=" * 55)
 
-    # Check 1 — Python version must be 3.8 or higher
-    version = sys.version_info
-    print(f"  Python version   : {version.major}.{version.minor}.{version.micro}")
-    if version < (3, 8):
-        msg = f"Python 3.8+ required. Current: {version.major}.{version.minor}.{version.micro}"
-        print(f"  FAIL — {msg}")
-        send_email_alert(
-            "[Vyoma Pipeline] STARTUP FAILED — Python version too old",
-            f"Script failed startup check.\n\n{msg}\n\nInstall Python 3.8+ on the server."
-        )
-        sys.exit(1)
-    print("  PASS — Python version OK")
-
-    # Check 2 — Disk space must be at least 2 GB free
+    # Disk space must be at least 2 GB free
     # Checked against SCRIPT_DIR (not cwd) since that's where the multi-GB
     # output CSVs actually get written
     free_bytes = shutil.disk_usage(SCRIPT_DIR).free

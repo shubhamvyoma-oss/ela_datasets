@@ -91,6 +91,9 @@ pipeline.
   empty strings for blanks (`fillna("")`) before saving.
 
 ## Configuration
+
+Credentials loading now comes from the shared `../../common.py` (`common.load_credentials()`), replacing this script's own `yaml.safe_load()` call -- same file, same fields, no behavior change.
+
 - `../../credentials.yaml` (shared, relative to `scripts/`): `API_KEY`,
   `ORGANIZATION_ID`, `INSTITUTE_ID` -- no local config file for this script,
   and it does not send any email/notification on success or failure.

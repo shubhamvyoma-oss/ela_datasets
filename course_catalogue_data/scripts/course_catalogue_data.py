@@ -9,8 +9,11 @@ sys.pycache_prefix = os.path.normpath(
 
 import requests
 import pandas as pd
-import yaml
 from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(os.path.abspath(__file__)).resolve().parents[2]))
+import common
 
 # ================= CONFIG =================
 # Load shared Edmingle credentials from ../../credentials.yaml (single
@@ -18,9 +21,7 @@ from datetime import datetime
 _SCRIPT_DIR_CREDS = os.path.dirname(os.path.abspath(__file__))
 _CREDENTIALS_PATH = os.path.normpath(os.path.join(_SCRIPT_DIR_CREDS, "..", "..", "credentials.yaml"))
 
-with open(_CREDENTIALS_PATH, "r", encoding="utf-8") as _f:
-    _credentials = yaml.safe_load(_f) or {}
-_edmingle = _credentials.get("edmingle", {})
+_edmingle = common.load_credentials(_CREDENTIALS_PATH)
 
 INSTITUTE_ID = int(_edmingle.get("institute_id", 0))
 ORGANIZATION_ID = int(_edmingle.get("organization_id", 0))

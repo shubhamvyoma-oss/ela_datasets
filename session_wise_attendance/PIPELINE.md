@@ -43,8 +43,6 @@ Every script reads this file (via the shared `pipeline_common.load_config()`) fo
 
 **Script:** `build_course_catalog.py` (primary) — merges `/institute/{id}/courses/catalogue` + `/short/masterbatch`
 **Output:** `course_catalog.csv` — one row per batch (plus catalogue-only rows for bundles with zero batches)
-**Backup script:** `build_course_catalog_alt.py` does a similar job from `/short/masterbatch` alone. Kept as a simpler alternative, not the primary source — the two scripts can drift, so `build_course_catalog.py` is the one actually feeding Stage 2.
-
 Batch status filtering, the exclusion list, `Is_Latest_Batch`/`Final_Status` derivation, and the enrollment rollup are all documented in **[RULES.md § Stage 1](RULES.md#stage-1--course-catalog)**.
 
 ### Stage 2 — Resolve class_ids
@@ -123,14 +121,12 @@ session_wise_attendance/
 │   ├── notifications.yaml            this pipeline's SMTP/notification settings
 │   │
 │   ├── build_course_catalog.py       STAGE 1 — builds the catalog
-│   ├── build_course_catalog_alt.py   (backup catalog builder, not primary)
 │   ├── resolve_class_ids.py          STAGE 2 — resolves class_id per batch
 │   ├── build_session_attendance.py   STAGE 3 — bulk attendance pull
 │   ├── attendance_crossvalidation.py spot-check tool (1 class_id at a time)
 │   │                                  + shared fetch/session functions used by Stage 3
 │   │
-│   ├── tests/                        unit tests for the pure logic in every script above
-│   └── New folder/                   old leftover/duplicate scratch scripts (not part of the pipeline)
+│   └── tests/                        unit tests for the pure logic in every script above
 │
 ├── output/                           everything the scripts generate
 │   ├── course_catalog.csv            → Stage 1 output: one row per batch (+ catalogue-only rows)
@@ -158,7 +154,6 @@ automatically by `pipeline_common.load_config()`.
 ## Known open items
 
 - `num_users` (Stage 2) is enrollment, not attendance — don't confuse with `present` (Stage 3).
-- Two catalog-building scripts exist (`build_course_catalog.py` and `build_course_catalog_alt.py`) — worth eventually deciding on one as the single source of truth.
 - `checkpoint_folder` / `log_folder` in `config.yaml` are unused dead config.
 - Stage 1 has no row-level resume (see RULES.md § Stage 1) — a crash mid-fetch means the whole run restarts, though it's still rate-limit-safe.
 - `config.yaml`'s `smtp.app_password` is still a placeholder — email reports will log a warning on every run until it's filled in with a real Gmail App Password.

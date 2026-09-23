@@ -40,7 +40,7 @@ No `requirements.txt`/`pyproject.toml` — dependencies (`pandas`, `requests`, `
 
 Three-stage funnel, each stage's output CSV is the next stage's input — always run them in order after any upstream change:
 
-1. **`build_course_catalog.py`** (Stage 1) — merges Edmingle's catalogue + masterbatch endpoints into one row per batch, applying business rules (latest-batch-per-bundle selection, status derivation, exclusion list, enrollment rollup — see RULES.md § Stage 1). `build_course_catalog_alt.py` is a simpler backup implementation of the same job — **not** the one feeding Stage 2; the two can drift.
+1. **`build_course_catalog.py`** (Stage 1) — merges Edmingle's catalogue + masterbatch endpoints into one row per batch, applying business rules (latest-batch-per-bundle selection, status derivation, exclusion list, enrollment rollup — see RULES.md § Stage 1).
 2. **`resolve_class_ids.py`** (Stage 2) — for every batch, calls `/masterbatch/<batchId>` to resolve the hidden `class_id`(s) attendance is actually queried against (a `batch_id` alone cannot fetch attendance). The real response shape (`class.courses_array[]`) contradicts Edmingle's own docs.
 3. **`build_session_attendance.py`** (Stage 3) — bulk-pulls session-level attendance per `class_id`. Imports `fetch_org_attendances`, `sessions_to_dataframe`, and `SESSION_BASE_COLUMNS` from **`attendance_crossvalidation.py`** directly (not duplicated) so the two scripts can't drift on session-shaping/status-classification logic. `attendance_crossvalidation.py` also works standalone as a single-`class_id` spot-check tool.
 

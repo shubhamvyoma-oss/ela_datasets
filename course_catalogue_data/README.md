@@ -55,6 +55,9 @@ There really aren't any:
 - In short: whatever Edmingle returns becomes the columns, verbatim.
 
 ## Configuration
+
+Credentials loading now comes from the shared `../../common.py` (`common.load_credentials()`), replacing this script's own `yaml.safe_load()` call -- same file, same fields, no behavior change.
+
 - `../../credentials.yaml` (shared, relative to `scripts/`): `API_KEY`,
   `ORGANIZATION_ID`, `INSTITUTE_ID` -- no local config file, no
   notifications.

@@ -4,6 +4,8 @@
 # alerts.
 credentials.yaml
 **/notifications.yaml
+# mirrors real recipient addresses from notifications.yaml
+NOTIFICATIONS.md
 
 # Generated output -- CSVs, xlsx, logs, checkpoint/chunk/state JSON files.
 # Every pipeline now writes exclusively into its own output/ folder (see

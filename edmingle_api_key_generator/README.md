@@ -107,6 +107,9 @@ Edmingle's own `message` field truncated to 200 chars, exception type names)
 
 ## Configuration
 
+`edmingle_api_key_settings.py`'s credentials/notifications loading now comes from the shared `../../common.py`. `edmingle_credentials_writer.py` (the one script allowed to *write* to `credentials.yaml`) is untouched -- it does a targeted regex replace on the raw file text, not a full load/dump, specifically to preserve comments/formatting.
+
+
 - **`../../credentials.yaml`** (shared across all of `ela_datasets/`; this is
   the only script that writes to it, everyone else only reads it):
   - `edmingle.tutor_login.login_url`

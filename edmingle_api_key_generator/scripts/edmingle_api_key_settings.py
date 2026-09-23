@@ -13,23 +13,19 @@ Neither file is committed to version control.
 from __future__ import annotations
 
 import os
-
-import yaml
+import sys
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "..")))
+import common
+
 CREDENTIALS_PATH = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "..", "credentials.yaml"))
 NOTIFICATIONS_PATH = os.path.join(_SCRIPT_DIR, "notifications.yaml")
 
+_edmingle = common.load_credentials(CREDENTIALS_PATH)
+_notifications = common.load_notifications(_SCRIPT_DIR)
 
-def _load_yaml(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-_credentials = _load_yaml(CREDENTIALS_PATH)
-_notifications = _load_yaml(NOTIFICATIONS_PATH)
-
-_tutor_login = _credentials.get("edmingle", {}).get("tutor_login", {})
+_tutor_login = _edmingle.get("tutor_login", {})
 _email_channel = _notifications.get("channels", {}).get("email", {})
 _smtp = _email_channel.get("smtp", {})
 

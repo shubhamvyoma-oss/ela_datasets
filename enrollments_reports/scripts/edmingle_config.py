@@ -14,12 +14,11 @@ JSON config.
 
 import json
 import logging
-import smtplib
 import sys
-from email.mime.text import MIMEText
 from pathlib import Path
 
-import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
 
 DEFAULTS = {
     "chunk_days": 30,
@@ -39,8 +38,7 @@ def load_credentials(credentials_path: Path = CREDENTIALS_PATH) -> dict:
     if not credentials_path.exists():
         sys.exit(f"Shared credentials file not found: {credentials_path}")
 
-    creds = yaml.safe_load(credentials_path.read_text()) or {}
-    edmingle_cfg = creds.get("edmingle", {})
+    edmingle_cfg = common.load_credentials(credentials_path)
 
     required = ["api_key", "organization_id"]
     missing = [key for key in required if not edmingle_cfg.get(key)]
@@ -74,35 +72,9 @@ def load_config(config_path: Path) -> dict:
 def load_notifications(notifications_path: Path = NOTIFICATIONS_PATH) -> dict:
     if not notifications_path.exists():
         sys.exit(f"Notifications file not found: {notifications_path}")
-    return yaml.safe_load(notifications_path.read_text()) or {}
+    return common.load_notifications(notifications_path.parent)
 
 
 def send_mail(cfg: dict, subject: str, body: str, logger: logging.Logger) -> None:
     notifications = load_notifications()
-    email_cfg = notifications.get("channels", {}).get("email", {})
-
-    if not email_cfg.get("enabled"):
-        logger.warning("Email channel disabled in notifications.yaml; skipping email notification.")
-        return
-
-    smtp_cfg = email_cfg.get("smtp", {})
-    to_addresses = email_cfg.get("to_addresses") or []
-
-    required = ["host", "port", "username", "password"]
-    if not all(smtp_cfg.get(k) for k in required) or not to_addresses:
-        logger.warning("SMTP not fully configured in notifications.yaml; skipping email notification.")
-        return
-
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = smtp_cfg.get("from_address", smtp_cfg["username"])
-    msg["To"] = ", ".join(to_addresses)
-
-    try:
-        with smtplib.SMTP(smtp_cfg["host"], int(smtp_cfg["port"]), timeout=30) as server:
-            server.starttls()
-            server.login(smtp_cfg["username"], smtp_cfg["password"])
-            server.sendmail(msg["From"], to_addresses, msg.as_string())
-        logger.info(f"Email sent: {subject!r}")
-    except Exception as exc:
-        logger.error(f"Failed to send email ({subject!r}): {exc}")
+    common.send_mail(notifications, subject, body, logger)

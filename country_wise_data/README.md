@@ -36,6 +36,9 @@ per pipeline.
 - **Windows file-lock retry (documented, not Linux-specific in effect).** File writes (CSV header, row appends, checkpoint save, truncate-on-resume) retry up to 6 times with exponential backoff on `PermissionError`/`OSError`. This is called out in the code as a known Windows condition — antivirus or OneDrive can transiently lock a just-written file — and is treated as a transient, retryable condition, not a real error.
 
 ## Configuration
+
+Credentials loading and the rate limiter now come from the shared `../../common.py`. The rate limiter's method changed from `wait_if_needed()` to `acquire()` (same blocking semantics) as part of that consolidation.
+
 - `../../credentials.yaml` (shared, two levels up from `scripts/`, used by every pipeline under `ela_datasets/`): `edmingle.api_key` -> mapped to `apikey`, `edmingle.organization_id` -> mapped to `orgid`. These are merged into the config dict in memory at load time and are never read from this folder's own config file or from argv (per the fix made earlier today, which corrected a wrong-API-key bug).
 - `edmingle_user_country_list_config.json` (in `scripts/`) holds the non-credential settings: `base_url`, `filter_key`, `sort_order`, `per_page`, `start_date`, `end_date`, `rate_limit_per_minute`, `output_csv`, `checkpoint_file`.
 - There is **no** `notifications.yaml` use in this script — it has no email/alerting capability. On an unrecoverable page failure it logs the failure and exits with status 1; it does not send any notification.
