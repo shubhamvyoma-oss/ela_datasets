@@ -52,7 +52,7 @@ from pipeline_common import (
 )
 
 STAGE_NAME = "build_course_catalog"
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
+SCRIPT_DIR = Path(__file__).parent
 BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"
 DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
 
@@ -160,7 +160,7 @@ def get_catalogue(institute_id, headers):
         if response is not None:
             print("Status Code:", response.status_code)
             print("Response body:", response.text[:500])
-            print("Tip: If 400/401, the API key may have rotated — update api_key in config.yaml.")
+            print("Tip: If 400/401, the API key may have rotated — update edmingle.api_key in ../../credentials.yaml.")
         return pd.DataFrame()
 
     # Guard against HTML response (wrong URL resolving to web page)
@@ -360,13 +360,13 @@ def main():
     parser.add_argument("--calls_per_minute", type=float, default=DEFAULT_CALLS_PER_MINUTE)
     args = parser.parse_args()
 
-    config = load_config(CONFIG_PATH)
+    config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
     org_id = config.get("org_id", 683)
     institute_id = config.get("institute_id", 483)
 
     if not apikey:
-        print("[ERROR] No API key found. Pass --apikey or set api_key in config.yaml")
+        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
         sys.exit(1)
 
     output_folder = resolve_output_folder(config, Path(__file__))

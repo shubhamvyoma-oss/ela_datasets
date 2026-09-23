@@ -21,7 +21,7 @@ USAGE
 -----
     python attendance_crossvalidation.py --class_id 199222 --start 2023-09-21 --end 2026-08-24
 
-Reads credentials from config.yaml (shared with every other pipeline script).
+Reads credentials from the shared ../../credentials.yaml (shared with every other ela_datasets/ pipeline).
 Writes a CSV with one row per session, plus a summary printed to stdout.
 
 INTEGRATION NOTE
@@ -65,7 +65,7 @@ from pipeline_common import (
 )
 
 STAGE_NAME = "attendance_crossvalidation"
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
+SCRIPT_DIR = Path(__file__).parent
 BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"  # matches your other calls
 ORG_ATTENDANCES_ENDPOINT = f"{BASE_URL}/organization/attendances"
 
@@ -331,20 +331,20 @@ def main():
     parser.add_argument("--start", type=str, required=True, help="YYYY-MM-DD")
     parser.add_argument("--end", type=str, required=True, help="YYYY-MM-DD")
     parser.add_argument("--apikey", type=str, default=None,
-                         help="Override config.yaml api key")
+                         help="Override the api_key from ../../credentials.yaml")
     parser.add_argument("--out", type=str, default=None,
-                         help="Defaults to config.yaml's crossvalidation.output_filename")
+                         help="Defaults to attendance_spotcheck.csv")
     args = parser.parse_args()
 
-    config = load_config(CONFIG_PATH)
+    config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
     org_id = config.get("org_id", 683)
-    out_filename = args.out or config.get("crossvalidation", {}).get("output_filename", "attendance_spotcheck.csv")
+    out_filename = args.out or "attendance_spotcheck.csv"
 
     output_folder = resolve_output_folder(config, Path(__file__))
 
     if not apikey:
-        print("[ERROR] No API key found. Pass --apikey or set api_key in config.yaml")
+        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
         sys.exit(1)
 
     start_ts = to_unix(args.start)

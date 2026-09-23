@@ -9,21 +9,30 @@ different copies of the same logic (they used to each carry their own).
 
 CREDENTIALS
 -----------
-The Edmingle api_key/org_id/orgid/institute_id used to live directly in
-config.yaml. They now live in the shared ../../credentials.yaml (one Edmingle
-key for every pipeline under ela_datasets/ -- see that file's header
-comment), and SMTP settings now live in this pipeline's own
-notifications.yaml (recipients/channels are per-pipeline, not shared).
-load_config() merges both onto the dict it returns, in the exact same
-shape (api_key/org_id/orgid/institute_id/smtp keys) the 5 scripts already
-read -- so no other call site needs to change.
+The Edmingle api_key/org_id/orgid/institute_id come from the shared
+../../credentials.yaml (one Edmingle key for every pipeline under
+ela_datasets/ -- see that file's header comment), and SMTP settings come
+from this pipeline's own notifications.yaml (recipients/channels are
+per-pipeline, not shared). load_config() merges both onto the dict it
+returns, in the exact same shape (api_key/org_id/orgid/institute_id/smtp
+keys) the 5 scripts already read -- so no other call site needs to change.
+
+config.yaml (removed 2026-09-23) used to hold a handful of tunables
+(base_url, output_folder, roster_gap_filler_enabled,
+exclude_archived_students, timezone, crossvalidation.*) alongside the
+credentials above. Every one of those was either never actually read by
+any script (base_url, roster_gap_filler_enabled, exclude_archived_students,
+checkpoint_folder, log_folder, crossvalidation.default_class_id/
+default_start_date) or already had a safe inline default at its one call
+site (output_folder in resolve_output_folder(), crossvalidation's
+output_filename in attendance_crossvalidation.py) -- so removing the file
+needed no fallback logic added here, just removing the now-pointless
+config.yaml read itself.
 
 The actual credentials.yaml/notifications.yaml file reading and the SMTP
-connect-and-send mechanics now delegate to ela_datasets/common.py
+connect-and-send mechanics delegate to ela_datasets/common.py
 (common.load_credentials / common.load_notifications / common.send_mail) --
-the same helpers 5 other pipelines under ela_datasets/ already use --
-while this module keeps its own fail-soft file-existence checks and the
-exact config-dict shape/keys every script here already reads.
+the same helpers 5 other pipelines under ela_datasets/ already use.
 
 USAGE
 -----
@@ -39,8 +48,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
 # Pipeline scripts only add their own scripts/ folder to sys.path (see the
 # sys.path.insert line near the top of each of the 4 entry points), not the
 # ela_datasets/ repo root -- so this module adds it itself before importing
@@ -52,42 +59,31 @@ import common
 DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't be parsed
 
 
-def load_config(config_path: Path) -> dict:
-    """Reads config.yaml; returns {} (with a warning) if it doesn't exist.
-    Also merges in the shared Edmingle credentials from ../../credentials.yaml
-    and this pipeline's notification/SMTP settings from notifications.yaml
-    (same folder as config.yaml) -- see module docstring."""
-    if not config_path.exists():
-        print(f"[WARN] {config_path} not found — pass --apikey explicitly.")
-        config = {}
-    else:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
-
-    _merge_credentials(config, config_path)
-    _merge_notifications(config, config_path)
+def load_config(script_dir: Path) -> dict:
+    """Merges the shared Edmingle credentials (../../credentials.yaml) and
+    this pipeline's own notifications.yaml onto a fresh config dict -- see
+    module docstring for why there's no config.yaml read here anymore."""
+    config: dict = {}
+    _merge_credentials(config, script_dir)
+    _merge_notifications(config, script_dir)
     return config
 
 
-def _merge_credentials(config: dict, config_path: Path) -> None:
+def _merge_credentials(config: dict, script_dir: Path) -> None:
     """Merges api_key/org_id/orgid/institute_id from the shared
     ../../credentials.yaml onto config, in the same keys the 5 scripts already
     read via config.get("api_key")/config.get("org_id", ...)/etc. org_id
     and orgid are kept as two separate keys (some endpoints expect the
     uppercase param name) but both are sourced from the same
-    edmingle.organization_id value. The actual file read now delegates to
+    edmingle.organization_id value. The actual file read delegates to
     common.load_credentials(); the fail-soft existence check below (warn +
-    return instead of raising) is kept exactly as before -- every script
-    here still falls back to --apikey when this is missing."""
-    # .resolve() first: Path('.').parent == Path('.') in pathlib, so a
-    # relative config_path (e.g. when a script is launched as
-    # `python3 script.py` from inside its own folder, giving a relative
-    # __file__) would otherwise make parent.parent.parent stay in the same
-    # folder instead of climbing to ela_datasets/. config.yaml now lives in
-    # this pipeline's scripts/ subfolder (one level deeper than before the
-    # scripts/output split), so climbing to ela_datasets/ takes one extra
-    # ".parent": scripts/ -> session_wise_attendance/ -> ela_datasets/.
-    credentials_path = config_path.resolve().parent.parent.parent / "credentials.yaml"
+    return instead of raising) is kept as before -- every script here still
+    falls back to --apikey when this is missing.
+    script_dir -> session_wise_attendance/ -> ela_datasets/, hence two
+    ".parent" steps (script_dir is already the scripts/ folder, not a file
+    inside it, so this needs one fewer ".parent" than climbing from a
+    config.yaml file path used to)."""
+    credentials_path = script_dir.resolve().parent.parent / "credentials.yaml"
     if not credentials_path.exists():
         print(f"[WARN] {credentials_path} not found — pass --apikey explicitly.")
         return
@@ -100,14 +96,11 @@ def _merge_credentials(config: dict, config_path: Path) -> None:
         config["orgid"] = edmingle["organization_id"]
     if "institute_id" in edmingle:
         config["institute_id"] = edmingle["institute_id"]
-    # base_url isn't currently read from config.yaml by any script (each
-    # hardcodes its own BASE_URL constant), but keep this here so config
-    # still has a usable base_url even if that ever changes.
-    if "base_url" not in config and "base_url" in edmingle:
+    if "base_url" in edmingle:
         config["base_url"] = edmingle["base_url"]
 
 
-def _merge_notifications(config: dict, config_path: Path) -> None:
+def _merge_notifications(config: dict, script_dir: Path) -> None:
     """Merges this pipeline's notifications.yaml (email SMTP settings +
     recipients) onto config["smtp"], in the exact shape send_run_report()
     already expects (host/port/username/app_password/from_address/
@@ -115,10 +108,8 @@ def _merge_notifications(config: dict, config_path: Path) -> None:
     (common.load_notifications() already returns {} if the file is missing,
     matching the old "missing file = notifications disabled" behavior) is
     also stashed on config["_notifications"] so send_run_report() can hand
-    it straight to common.send_mail() without re-reading the file or needing
-    its own copy of config_path."""
-    pipeline_dir = config_path.resolve().parent
-    notifications = common.load_notifications(pipeline_dir)
+    it straight to common.send_mail() without re-reading the file."""
+    notifications = common.load_notifications(script_dir.resolve())
     config["_notifications"] = notifications
 
     email_cfg = ((notifications.get("channels") or {}).get("email")) or {}

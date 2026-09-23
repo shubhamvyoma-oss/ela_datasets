@@ -60,7 +60,7 @@ from pipeline_common import (
 )
 
 STAGE_NAME = "resolve_class_ids"
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
+SCRIPT_DIR = Path(__file__).parent
 BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"
 MASTERBATCH_ENDPOINT = f"{BASE_URL}/masterbatch"
 
@@ -186,14 +186,14 @@ def main():
     parser.add_argument("--apikey", type=str, default=None)
     args = parser.parse_args()
 
-    config = load_config(CONFIG_PATH)
+    config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
     org_id = config.get("org_id", 683)
 
     output_folder = resolve_output_folder(config, Path(__file__))
 
     if not apikey:
-        print("[ERROR] No API key found. Pass --apikey or set api_key in config.yaml")
+        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
         sys.exit(1)
 
     input_path = Path(args.input_file)

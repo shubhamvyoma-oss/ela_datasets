@@ -18,16 +18,18 @@ This folder is split into two subfolders:
 
 - `scripts/` -- all source code and config: `pipeline_common.py`, the 4
   entry-point scripts (`build_course_catalog.py`, `resolve_class_ids.py`,
-  `build_session_attendance.py`, `attendance_crossvalidation.py`),
-  `config.yaml`, `notifications.yaml`, and `tests/` (the unit test suite --
-  see Tests below). Run everything from inside `scripts/`.
+  `build_session_attendance.py`, `attendance_crossvalidation.py`), and
+  `notifications.yaml`. Run everything from inside `scripts/`.
 - `output/` -- everything the scripts generate: `course_catalog.csv`,
   `class_id_lookup.csv`, `session_wise_attendance_data.csv`,
   `attendance_spotcheck.csv`, `master_attendance.csv`, per-run `.log` files,
   and the `logs/<stage_name>/` timestamped log directories.
 
-`README.md`, `CLAUDE.md`, `PIPELINE.md`, and `RULES.md` stay at this
-folder's root (not moved into `scripts/`).
+`README.md` stays at this folder's root (not moved into `scripts/`). It is
+now the sole documentation for this pipeline -- `CLAUDE.md`, `PIPELINE.md`,
+`RULES.md`, and the `scripts/tests/` unit test suite were removed
+2026-09-23 as dead weight once `config.yaml` (see Configuration) went away;
+this file has been updated to stand on its own.
 
 Compiled bytecode (`__pycache__`) for every pipeline under `ela_datasets/`
 is redirected to a single shared `ela_datasets/.pycache/` directory (via
@@ -35,7 +37,7 @@ is redirected to a single shared `ela_datasets/.pycache/` directory (via
 before any local import) instead of a separate `__pycache__` folder per
 pipeline.
 
-## Data model (read PIPELINE.md/RULES.md in this folder for the authoritative version)
+## Data model
 
 ```
 Bundle (permanent course, e.g. "Vishnu Sahasranama")
@@ -101,7 +103,19 @@ Credentials/notifications loading and the SMTP connect-and-send mechanics now co
 
 - **`../../credentials.yaml`** (shared across all `ela_datasets/` pipelines, two folders up from `scripts/`): `api_key` (rotates ~every 30 days — update here only), `organization_id` (merged into both `org_id` and `orgid` keys, since some endpoints expect the uppercase param name), `institute_id`. Loaded via `common.load_credentials()` and merged in automatically by `pipeline_common.load_config()` / `_merge_credentials()`.
 - **`notifications.yaml`** (in `scripts/`, `chmod 600`): SMTP host/port/username/app_password/from_address/use_tls and the recipient list, under `channels.email`. Loaded via `common.load_notifications()`. Only merged onto `config["smtp"]` if `channels.email.enabled` is true, and `send_run_report()` hands the raw notifications block to `common.send_mail()` to actually connect and send. Best-effort — a missing/placeholder SMTP config just logs a `[WARN]`, never crashes a run.
-- **`config.yaml`** (in `scripts/`): `base_url`, `output_folder` / `checkpoint_folder` / `log_folder` (see Known limitations — the latter two are dead config), `roster_gap_filler_enabled`, `exclude_archived_students`, `timezone`, and a `crossvalidation:` block of defaults for the standalone spot-check tool.
+- **`config.yaml` was removed 2026-09-23.** It used to also hold `base_url`,
+  `output_folder`, `checkpoint_folder`/`log_folder`, `roster_gap_filler_enabled`,
+  `exclude_archived_students`, `timezone`, and a `crossvalidation:` block --
+  every one of those was either never actually read by any script (`base_url`
+  is hardcoded per-script; `checkpoint_folder`/`log_folder`/
+  `roster_gap_filler_enabled`/`exclude_archived_students`/
+  `crossvalidation.default_class_id`/`default_start_date` are referenced
+  nowhere in the code) or already had a safe inline default at its one call
+  site (`output_folder` defaults to `.` in `resolve_output_folder()`;
+  `crossvalidation.output_filename` defaults to `attendance_spotcheck.csv`
+  in `attendance_crossvalidation.py`). `pipeline_common.load_config()` no
+  longer reads a config file at all -- it only merges credentials and
+  notifications (see above).
 
 ## How to run
 
@@ -139,30 +153,18 @@ All land in this pipeline's `output/` folder, anchored to the script's own locat
 
 ## Tests
 
-`tests/` covers only deterministic, pure logic — never anything that makes a live HTTP call (that's what the crossvalidation spot-check tool is for). Every test builds fabricated input; none touch the real CSVs in this folder or the network.
-
-| File | Covers |
-|---|---|
-| `test_build_course_catalog.py` | Exclusion-list matching (incl. non-numeric input), latest-batch selection per bundle with date tie-breaking, `Final_Status` rules for latest vs. non-latest and valid vs. invalid catalogue status, bundle enrollment summation/broadcast |
-| `test_resolve_class_ids.py` | 429 message parsing (with/without fallback), `courses_array` -> record mapping (incl. joining `associated_masterbatches`), empty results, resume-set loading from an existing CSV, checkpoint CSV append (header written once, then appended) |
-| `test_attendance_crossvalidation.py` | IST midnight conversion both directions, 429 parsing, empty session list, `session_conducted` for Cancelled/Postponed vs. everything else (incl. unknown status codes), `attendance_pct` division-by-zero safety, per-`master_batch_id` chronological `session_number`, whitespace-stripped batch names |
-| `test_build_session_attendance.py` | Resume-set loading keyed on `class_id`, checkpoint CSV append |
-
-Run with (from inside `scripts/`):
-
-```bash
-cd scripts
-python -m pytest tests/          # all tests, ~1.5s, no network calls
-python -m pytest tests/ -v
-python -m pytest tests/test_build_course_catalog.py
-```
-
-Per PIPELINE.md, this was last known to be 29 tests, all passing. Run the suite after any change to shared logic (`sessions_to_dataframe`, `to_unix`/`unix_to_ist`, or the catalog business-logic functions) before trusting a real pipeline run.
+The `scripts/tests/` unit test suite (29 tests covering the pure business
+logic in each of the 4 entry-point scripts -- exclusion matching, latest-batch
+selection, IST conversion, 429 parsing, resume/checkpoint behavior, etc., no
+live HTTP calls) was removed 2026-09-23 along with `config.yaml`. If this
+pipeline's shared logic (`sessions_to_dataframe`, `to_unix`/`unix_to_ist`, the
+catalog business-logic functions) changes again, verify by hand against a
+real run's output rather than assuming an automated safety net exists.
 
 ## Known limitations / things to watch for
 
 - **Stage 1 has no row-level resume.** `Is_Latest_Batch` and `bundle_enrollment_count` are global aggregates that require the complete fetched dataset, so a crash mid-fetch means the whole run restarts (Stages 2 & 3 both checkpoint against their output CSV and resume automatically).
-- **`checkpoint_folder` and `log_folder` in `config.yaml` are confirmed dead config** — verified against the current code: neither key is referenced anywhere in `pipeline_common.py` or any of the 5 scripts. Checkpointing is done by re-reading the output CSV itself (Stages 2 & 3) or writing atomically at the end (Stage 1); real per-run logs always go to `logs/<stage_name>/<stage_name>_<timestamp>.log` (hardcoded relative to the script's folder), never to the configured `log_folder`.
+- **Checkpointing and logging never depended on `config.yaml`** (now removed -- see Configuration): checkpointing is done by re-reading the output CSV itself (Stages 2 & 3) or writing atomically at the end (Stage 1); real per-run logs always go to `logs/<stage_name>/<stage_name>_<timestamp>.log`, hardcoded relative to the script's folder.
 - **Output path resolution is already correctly anchored.** `pipeline_common.resolve_output_folder()` resolves a relative `output_folder` against `<script's folder>/../output` (i.e. `scripts/../output`, this pipeline's `output/` subfolder), not the process's current working directory — confirmed by reading the code and by a functional check (calling `resolve_output_folder({'output_folder': '.'}, <absolute script path>)` from an unrelated cwd still returns the `session_wise_attendance/output/` folder). So output always lands in `output/` even if a script is ever invoked via an absolute path from a different working directory (e.g. Task Scheduler). `PipelineRunLogger` anchors its `logs/` directory the same way, so per-run logs land in `output/logs/<stage_name>/`, not next to the scripts.
 - **`smtp.app_password` / notifications config**: if `notifications.yaml` is missing, disabled, or has a placeholder app password, `send_run_report()` just logs a `[WARN]` and the pipeline itself is unaffected — email reports are best-effort only.
 - **Pre-recorded/self-paced content** can legitimately return session rows with `present = 0` across the board (`NotSignedIn` everywhere) — that's expected, not a fetch bug; it means live attendance was never tracked for that subject. The planned Stage 4 (`has_attendance_data` flag, catalog-anchored join) exists specifically to let downstream analysis exclude these instead of treating "no sessions returned" as zero attendance.
