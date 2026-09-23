@@ -23,15 +23,12 @@ import logging        # structured logging to file and console
 import os             # file system operations (fsync, replace)
 import re             # regex for parsing legacy page number file
 import shutil         # disk usage check + file copy
-import smtplib        # send email alerts via Gmail SMTP
 import sys            # exit codes and Python version info
 import time           # sleep between API calls and timing
 import uuid           # generate unique temp filenames for atomic writes
-from collections import deque             # rolling window for rate limiter
 from datetime import datetime, timezone   # timestamps for state and logging
-from email.message import EmailMessage    # build email messages
 from pathlib import Path                  # cross-platform file paths
-from typing import Any, Callable, Iterable  # type hints
+from typing import Any, Iterable          # type hints
 
 # Shared bytecode cache for every ela_datasets/ pipeline -- must be set
 # before any local module import below, so this and every module it pulls
@@ -41,9 +38,25 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
+# Shared helpers (credentials/notifications loading, email sending, the
+# rolling-window rate limiter, and crash-safe atomic write helpers) now
+# live in ela_datasets/common.py, two directories up from this script
+# (scripts/ -> ela_mis_datasets/ -> ela_datasets/).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
+
 # Third-party — must be installed via: pip install requests
 import requests
 import yaml            # read shared credentials.yaml / notifications.yaml
+
+from common import (
+    RollingRateLimiter,
+    atomic_write_csv,
+    atomic_write_json,
+    format_duration,
+    read_csv_rows,
+    utc_now,
+)
 
 
 # =============================================================================
@@ -72,18 +85,25 @@ OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
 # =============================================================================
 
 def _load_credentials(base_dir: Path) -> dict[str, Any]:
-    # Reads the shared credentials.yaml one directory above this pipeline
+    # Reads the shared credentials.yaml one directory above this pipeline.
+    # Delegates the actual file read to common.load_credentials(), which
+    # raises FileNotFoundError / yaml errors as-is on a missing/malformed
+    # file -- same "never silently proceed" behavior this always had.
     credentials_path = (base_dir / ".." / ".." / "credentials.yaml").resolve()
-    with credentials_path.open("r", encoding="utf-8") as handle:
-        creds = yaml.safe_load(handle) or {}
-    return creds.get("edmingle", {})
+    return common.load_credentials(credentials_path)
 
 
 def _load_notifications_config() -> dict[str, Any]:
-    # Reads this pipeline's own notifications.yaml (same folder as the script)
+    # Reads this pipeline's own notifications.yaml (same folder as the script).
+    # A missing file was always a hard failure here (previously an unhandled
+    # FileNotFoundError from open()) -- preserved explicitly, since
+    # common.load_notifications() on its own treats a missing file as
+    # "notifications disabled" (returns {}), which is not this script's
+    # existing behavior.
     notifications_path = Path(__file__).with_name("notifications.yaml")
-    with notifications_path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+    if not notifications_path.exists():
+        raise FileNotFoundError(f"Notifications file not found: {notifications_path}")
+    return common.load_notifications(notifications_path.parent)
 
 
 _notifications_config = _load_notifications_config()
@@ -93,23 +113,11 @@ _smtp_config = _email_config.get("smtp", {}) or {}
 
 # =============================================================================
 # SECTION 2 — ALERT CONFIGURATION
-# Email credentials for failure and completion notifications
-# Values now loaded from notifications.yaml (same folder as this script)
+# Email credentials/SMTP mechanics for failure and completion notifications
+# now live in common.send_mail() (see send_email_alert below), which reads
+# them straight from _notifications_config -- no separate module-level
+# ALERT_EMAIL_*/SMTP_HOST/SMTP_PORT constants needed here any more.
 # =============================================================================
-
-# Recipient — who receives the alert emails
-ALERT_EMAIL_TO = ", ".join(_email_config.get("to_addresses", []) or [])
-
-# Sender — must match the Gmail account used for the App Password below
-ALERT_EMAIL_FROM = _smtp_config.get("from_address", "")
-
-# Gmail App Password — NOT your regular Gmail password
-# Loaded from notifications.yaml -> channels.email.smtp.app_password
-ALERT_EMAIL_PASSWORD = _smtp_config.get("app_password", "")
-
-# SMTP server host/port — loaded from notifications.yaml -> channels.email.smtp
-SMTP_HOST = _smtp_config.get("host", "smtp.gmail.com")
-SMTP_PORT = int(_smtp_config.get("port", 587))
 
 # How often (in seconds) to send a periodic status-update email during the
 # course pull, expressed in notifications.yaml as hours (default 6 hours =
@@ -215,34 +223,25 @@ TRANSIENT_HTTP_STATUSES = {408, 429}
 
 # =============================================================================
 # SECTION 5 — EMAIL ALERT FUNCTION  [ADDED BY SHUBHAM]
-# Sends Gmail notification on script failure or completion
-# Skips silently if ALERT_EMAIL_PASSWORD is empty
+# Sends notification email on script failure or completion via
+# common.send_mail() -- skips silently (logs a warning) if email is
+# disabled or SMTP config is incomplete in notifications.yaml
 # =============================================================================
 
 def send_email_alert(subject: str, body: str) -> None:
-    # Skip if password not configured — never crash because of missing email setup
-    if not ALERT_EMAIL_PASSWORD:
-        print(f"[ALERT] Email not configured — skipping. Subject: {subject}")
-        return
-    try:
-        # Build email message
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"]    = ALERT_EMAIL_FROM
-        msg["To"]      = ALERT_EMAIL_TO
-        msg.set_content(body)
-
-        # Connect to Gmail SMTP and send
-        recipients = [addr.strip() for addr in ALERT_EMAIL_TO.split(",") if addr.strip()]
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-            smtp.starttls()                                     # encrypt connection
-            smtp.login(ALERT_EMAIL_FROM, ALERT_EMAIL_PASSWORD) # authenticate
-            smtp.sendmail(ALERT_EMAIL_FROM, recipients, msg.as_string())
-
-        print(f"[ALERT] Email sent: {subject}")
-    except Exception as e:
-        # Never let email failure crash the main pipeline
-        print(f"[ALERT] Could not send email: {e}")
+    # Connect-and-send mechanics now delegate to common.send_mail(), which
+    # is a drop-in replacement for the previous smtplib/EmailMessage logic
+    # here: it also treats the from-address as the SMTP login username (no
+    # separate username field in this pipeline's notifications.yaml), and
+    # accepts to_addresses as a comma-separated string (as stored in
+    # _email_config) or a list. It never raises -- logs a warning and
+    # returns False instead -- matching this function's original
+    # "never let email failure crash the main pipeline" behavior. Uses the
+    # notifications.yaml already loaded once at import time (module-level
+    # _notifications_config) so every existing call site (startup checks,
+    # error handlers, completion, mid-run status, etc.) needs no changes.
+    logger = logging.getLogger("edmingle_sync")
+    common.send_mail(_notifications_config, subject, body, logger)
 
 
 # =============================================================================
@@ -376,62 +375,17 @@ class PermanentAPIError(RuntimeError):
 # =============================================================================
 # SECTION 9 — UTILITY FUNCTIONS
 # Small helpers used throughout the script
+#
+# utc_now, format_duration, atomic_write_json, atomic_write_csv, and
+# read_csv_rows used to be defined here but were byte-for-byte identical
+# (temp-file + fsync + os.replace mechanics, same ISO-8601 timestamp format,
+# same duration breakdown) to the versions now consolidated in the shared
+# ela_datasets/common.py, so they are imported from there instead (see the
+# `from common import ...` line near the top of this file). Only
+# atomic_copy, parse_legacy_page, calculate_start_page, merge_students, and
+# extract_student remain here -- they are specific to this pipeline's
+# legacy-migration and student/course business logic.
 # =============================================================================
-
-def utc_now() -> str:
-    # Returns current UTC time as ISO 8601 string for state file timestamps
-    return datetime.now(timezone.utc).isoformat()
-
-
-def format_duration(seconds: float) -> str:
-    # Converts seconds into readable string e.g. "2h 15m 30s"
-    total_seconds        = max(0, int(round(seconds)))
-    days, remainder      = divmod(total_seconds, 86400)
-    hours, remainder     = divmod(remainder, 3600)
-    minutes, seconds     = divmod(remainder, 60)
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if days or hours:
-        parts.append(f"{hours}h")
-    if days or hours or minutes:
-        parts.append(f"{minutes}m")
-    parts.append(f"{seconds}s")
-    return " ".join(parts)
-
-
-def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    # Writes JSON to temp file then renames — prevents corruption if interrupted
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())  # force write to physical disk
-        os.replace(temporary, path)    # atomic rename — safe even if process killed
-    finally:
-        temporary.unlink(missing_ok=True)  # clean up temp file on failure
-
-
-def atomic_write_csv(
-    path: Path, fieldnames: list[str], rows: Iterable[dict[str, Any]]
-) -> None:
-    # Writes CSV to temp file then renames — prevents corruption if interrupted
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
-            handle.flush()
-            os.fsync(handle.fileno())  # force write to physical disk
-        os.replace(temporary, path)    # atomic rename
-    finally:
-        temporary.unlink(missing_ok=True)
-
 
 def atomic_copy(source: Path, destination: Path) -> None:
     # Copies a file atomically — used for legacy file migration
@@ -457,14 +411,6 @@ def parse_legacy_page(path: Path) -> int:
 def calculate_start_page(last_completed_page: int, overlap_pages: int) -> int:
     # Go back N pages from last run to catch students who registered during that run
     return max(1, last_completed_page - overlap_pages)
-
-
-def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    # Reads all rows from CSV — returns empty list if file does not exist yet
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        return list(csv.DictReader(handle))
 
 
 def merge_students(
@@ -502,47 +448,16 @@ def extract_student(student: dict[str, Any]) -> dict[str, Any]:
 # SECTION 10 — RATE LIMITER
 # Ensures script stays within max_calls_per_minute from config
 # Uses rolling window — more precise than fixed sleep between calls
+#
+# The RollingRateLimiter class used to be defined here (deque-based rolling
+# window, with an injectable clock=/sleep= pair that nothing in this repo
+# ever overrode) but was byte-for-byte identical in behavior to the shared
+# version consolidated into ela_datasets/common.py (minus the unused
+# clock=/sleep= injection points, which common.py drops in favor of
+# time.monotonic/time.sleep directly) -- it is imported from there instead
+# (see the `from common import RollingRateLimiter` line near the top of
+# this file).
 # =============================================================================
-
-class RollingRateLimiter:
-
-    def __init__(
-        self,
-        max_calls: int,
-        window_seconds: float,
-        logger: logging.Logger,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self.max_calls      = max_calls       # max API calls allowed per window
-        self.window_seconds = window_seconds  # window size in seconds — 60
-        self.logger         = logger
-        self.clock          = clock
-        self.sleep          = sleep
-        self.calls: deque[float] = deque()    # timestamps of recent calls
-
-    def acquire(self) -> None:
-        # Blocks until a call slot is available — called before every API request
-        while True:
-            now = self.clock()
-            # Remove timestamps older than the rolling window
-            while self.calls and now - self.calls[0] >= self.window_seconds:
-                self.calls.popleft()
-            if len(self.calls) < self.max_calls:
-                # Slot available — record this call and return
-                self.calls.append(now)
-                return
-            # Window is full — wait for the oldest call to expire
-            wait_seconds = max(0.0, self.window_seconds - (now - self.calls[0]))
-            if wait_seconds >= 1.0:
-                self.logger.info("Rate limit reached; waiting %.2f seconds", wait_seconds)
-            else:
-                self.logger.debug("Rate-limit pacing wait: %.2f seconds", wait_seconds)
-            self.sleep(wait_seconds)
-
-    def reset(self) -> None:
-        # Clears history — called after a 429 rate limit block to restart cleanly
-        self.calls.clear()
 
 
 # =============================================================================
@@ -557,10 +472,15 @@ class EdmingleSync:
         self,
         config_path: Path,
         session: requests.Session | Any | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-        clock: Callable[[], float] = time.monotonic,
         logger: logging.Logger | None = None,
     ) -> None:
+        # Previously accepted injectable `sleep=`/`clock=` params (separate
+        # from the rate limiter's own, now-removed clock=/sleep= pair) for
+        # test seams. Confirmed via a repo-wide grep that nothing anywhere
+        # (this file's own single call site in main(), and no test in the
+        # repo) ever constructs EdmingleSync with non-default sleep/clock
+        # arguments, so they're removed here too -- internal use now calls
+        # time.sleep()/time.monotonic() directly (see request_json below).
         self.config_path = config_path.resolve()
         self.base_dir    = self.config_path.parent
         self.config      = self._load_config()
@@ -574,13 +494,10 @@ class EdmingleSync:
         }
         self.logger       = logger or configure_logging(self.paths["log"])
         self.session      = session or requests.Session()
-        self.sleep        = sleep
         self.rate_limiter = RollingRateLimiter(
             int(self.config["max_calls_per_minute"]),
-            60.0,
-            self.logger,
-            clock=clock,
-            sleep=sleep,
+            window_seconds=60.0,
+            logger=self.logger,
         )
         # Auth headers sent with every Edmingle API request
         self.headers = {
@@ -691,7 +608,7 @@ class EdmingleSync:
                     "%s request attempt %d failed: %s; retrying in %.2f seconds",
                     context, attempt, type(error).__name__, delay,
                 )
-                self.sleep(delay)
+                time.sleep(delay)
                 delay = min(maximum_delay, delay * 2)  # double wait each retry
                 continue
 
@@ -711,7 +628,7 @@ class EdmingleSync:
                     "waiting %.2f seconds before retrying",
                     context, attempt, block_seconds,
                 )
-                self.sleep(block_seconds)
+                time.sleep(block_seconds)
                 self.rate_limiter.reset()  # reset call history after long pause
                 delay = float(self.config["initial_retry_delay_seconds"])
                 continue
@@ -748,7 +665,7 @@ class EdmingleSync:
                     "%s returned %s HTTP %d on attempt %d; retrying in %.2f seconds",
                     context, classification, response.status_code, attempt, delay,
                 )
-                self.sleep(delay)
+                time.sleep(delay)
                 delay = min(maximum_delay, delay * 2)
                 continue
 
@@ -760,7 +677,7 @@ class EdmingleSync:
                     "%s returned invalid JSON on attempt %d: %s; retrying in %.2f seconds",
                     context, attempt, error, delay,
                 )
-                self.sleep(delay)
+                time.sleep(delay)
                 delay = min(maximum_delay, delay * 2)
                 continue
 
@@ -771,7 +688,7 @@ class EdmingleSync:
                     "retrying in %.2f seconds",
                     context, attempt, delay,
                 )
-                self.sleep(delay)
+                time.sleep(delay)
                 delay = min(maximum_delay, delay * 2)
                 continue
 

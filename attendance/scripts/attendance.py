@@ -91,6 +91,9 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
+
 import pandas as pd
 import requests
 import yaml
@@ -222,9 +225,7 @@ def load_config(config_path: str) -> dict:
     creds_path = script_dir.parent.parent / "credentials.yaml"
     if not creds_path.exists():
         sys.exit(f"\nShared credentials file not found: {creds_path}\n")
-    with open(creds_path, encoding="utf-8") as f:
-        creds_cfg = yaml.safe_load(f) or {}
-    edmingle_cfg = creds_cfg.get("edmingle", {}) or {}
+    edmingle_cfg = common.load_credentials(creds_path)
     cfg["api"]["key"]    = edmingle_cfg.get("api_key", "")
     cfg["api"]["org_id"] = str(edmingle_cfg.get("organization_id", ""))
 
@@ -234,8 +235,7 @@ def load_config(config_path: str) -> dict:
     notif_path = script_dir / "notifications.yaml"
     if not notif_path.exists():
         sys.exit(f"\nNotifications file not found: {notif_path}\n")
-    with open(notif_path, encoding="utf-8") as f:
-        notif_cfg = yaml.safe_load(f) or {}
+    notif_cfg = common.load_notifications(script_dir)
     email_channel = ((notif_cfg.get("channels", {}) or {}).get("email", {})) or {}
     smtp = email_channel.get("smtp", {}) or {}
     cfg["email"]["enabled"]              = email_channel.get(

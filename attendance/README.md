@@ -149,14 +149,31 @@ output numbers are correct:
 
 ## Configuration
 
+Credentials and notifications loading now come from the shared
+`../../common.py` (see its docstring) rather than a pipeline-local copy of
+the YAML-reading code -- `load_config()` in `attendance.py` keeps the same
+fail-fast validation and error messages around the `common.load_credentials()`
+/ `common.load_notifications()` calls, so behaviour is unchanged. The
+SMTP-sending internals of `EmailNotifier` are **not** migrated to
+`common.send_mail()`: this pipeline sends HTML-formatted alerts
+(`MIMEMultipart("alternative")` with a styled HTML body), while
+`common.send_mail()` only sends plain text (`MIMEText`), so routing through
+it would silently turn every alert email into raw HTML tags in the
+recipient's inbox. `EmailNotifier._send()` keeps its own direct `smtplib`
+call for this reason. The rate limiter (a flat `rate_limit_sleep_seconds`
+delay between day-calls, not a rolling window) and the checkpoint's inline
+atomic-write (`write to .tmp, then Path.replace()`) are also unchanged --
+neither duplicates a `common.py` helper closely enough to warrant it.
+
 - **`../../credentials.yaml`** (two levels up from `scripts/`, shared across
   every pipeline under `ela_datasets/`): `edmingle.api_key`,
-  `edmingle.organization_id`. Loaded by `load_config()`; the run exits
+  `edmingle.organization_id`. Loaded via `common.load_credentials()`; the run exits
   immediately if this file or either value is missing.
 - **`notifications.yaml`** (in `scripts/`, per-pipeline, not shared): SMTP host/
   port/username/app-password/from-address/timeout, `to_addresses`, and the
   three notification toggles: `notify_on_critical`, `notify_on_warning`,
-  `notify_on_completion` (under `channels.email`). `channels.slack` /
+  `notify_on_completion` (under `channels.email`). Loaded via
+  `common.load_notifications()`. `channels.slack` /
   `channels.teams` exist as placeholders (`enabled: false`) for future use but
   are not implemented in `attendance.py` yet.
 - **`config.yaml`** (in `scripts/`): everything else —

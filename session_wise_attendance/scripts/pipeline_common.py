@@ -18,6 +18,13 @@ load_config() merges both onto the dict it returns, in the exact same
 shape (api_key/org_id/orgid/institute_id/smtp keys) the 5 scripts already
 read -- so no other call site needs to change.
 
+The actual credentials.yaml/notifications.yaml file reading and the SMTP
+connect-and-send mechanics now delegate to ela_datasets/common.py
+(common.load_credentials / common.load_notifications / common.send_mail) --
+the same helpers 5 other pipelines under ela_datasets/ already use --
+while this module keeps its own fail-soft file-existence checks and the
+exact config-dict shape/keys every script here already reads.
+
 USAGE
 -----
     from pipeline_common import (
@@ -27,14 +34,20 @@ USAGE
 """
 
 import re
-import smtplib
 import sys
 import time
 from datetime import datetime
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import yaml
+
+# Pipeline scripts only add their own scripts/ folder to sys.path (see the
+# sys.path.insert line near the top of each of the 4 entry points), not the
+# ela_datasets/ repo root -- so this module adds it itself before importing
+# the shared common.py. session_wise_attendance/scripts/pipeline_common.py
+# -> parents[0]=scripts, [1]=session_wise_attendance, [2]=ela_datasets.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
 
 DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't be parsed
 
@@ -62,7 +75,10 @@ def _merge_credentials(config: dict, config_path: Path) -> None:
     read via config.get("api_key")/config.get("org_id", ...)/etc. org_id
     and orgid are kept as two separate keys (some endpoints expect the
     uppercase param name) but both are sourced from the same
-    edmingle.organization_id value."""
+    edmingle.organization_id value. The actual file read now delegates to
+    common.load_credentials(); the fail-soft existence check below (warn +
+    return instead of raising) is kept exactly as before -- every script
+    here still falls back to --apikey when this is missing."""
     # .resolve() first: Path('.').parent == Path('.') in pathlib, so a
     # relative config_path (e.g. when a script is launched as
     # `python3 script.py` from inside its own folder, giving a relative
@@ -75,9 +91,7 @@ def _merge_credentials(config: dict, config_path: Path) -> None:
     if not credentials_path.exists():
         print(f"[WARN] {credentials_path} not found — pass --apikey explicitly.")
         return
-    with open(credentials_path, "r", encoding="utf-8") as f:
-        credentials = yaml.safe_load(f) or {}
-    edmingle = credentials.get("edmingle") or {}
+    edmingle = common.load_credentials(credentials_path)
 
     if "api_key" in edmingle:
         config["api_key"] = edmingle["api_key"]
@@ -97,12 +111,16 @@ def _merge_notifications(config: dict, config_path: Path) -> None:
     """Merges this pipeline's notifications.yaml (email SMTP settings +
     recipients) onto config["smtp"], in the exact shape send_run_report()
     already expects (host/port/username/app_password/from_address/
-    use_tls/to_addresses in one flat dict)."""
-    notifications_path = config_path.resolve().parent / "notifications.yaml"
-    if not notifications_path.exists():
-        return
-    with open(notifications_path, "r", encoding="utf-8") as f:
-        notifications = yaml.safe_load(f) or {}
+    use_tls/to_addresses in one flat dict). The raw notifications.yaml dict
+    (common.load_notifications() already returns {} if the file is missing,
+    matching the old "missing file = notifications disabled" behavior) is
+    also stashed on config["_notifications"] so send_run_report() can hand
+    it straight to common.send_mail() without re-reading the file or needing
+    its own copy of config_path."""
+    pipeline_dir = config_path.resolve().parent
+    notifications = common.load_notifications(pipeline_dir)
+    config["_notifications"] = notifications
+
     email_cfg = ((notifications.get("channels") or {}).get("email")) or {}
     if not email_cfg.get("enabled", False):
         return
@@ -140,7 +158,15 @@ def resolve_output_folder(config: dict, script_path: Path) -> Path:
 class RateLimiter:
     """Sleeps out whatever's left of the target per-call spacing, accounting
     for time already spent on the call itself — keeps every script safely
-    under Edmingle's hard 30 calls/min cap."""
+    under Edmingle's hard 30 calls/min cap.
+
+    NOTE: this is a flat per-call delay (start()/wait(), sleeping out
+    whatever's left of a fixed 60/calls_per_minute spacing around each
+    network call), not a true rolling window. It does not share a shape
+    with common.py's RollingRateLimiter (max_calls/window_seconds,
+    acquire()/reset(), deque-based) used by other migrated pipelines, so it
+    was deliberately NOT migrated to it -- forcing the two together would
+    change how every --calls_per_minute run here actually paces requests."""
 
     def __init__(self, calls_per_minute: float):
         self.delay_seconds = 60.0 / calls_per_minute
@@ -220,10 +246,32 @@ class PipelineRunLogger:
         return False  # never swallow exceptions — let the script's own error handling see them
 
 
+class _PrintLogger:
+    """Minimal logging.Logger-like shim (just .info()/.warning()) so
+    common.send_mail()'s log lines come out as this pipeline's existing
+    print()-based [INFO]/[WARN] lines. This pipeline has never used the
+    `logging` module -- everything goes through print(), which
+    PipelineRunLogger already mirrors into the run's log file -- so this
+    keeps send_run_report()'s console/log output in the same style instead
+    of introducing a second, differently-formatted logging path."""
+
+    @staticmethod
+    def info(msg, *args, **kwargs):
+        print(f"[INFO] {msg}")
+
+    @staticmethod
+    def warning(msg, *args, **kwargs):
+        print(f"[WARN] {msg}")
+
+
 def send_run_report(stage_name: str, summary: dict, config: dict):
     """Emails a plaintext run summary using config.yaml's smtp: block.
     Best-effort only: a missing/placeholder SMTP config must never crash
-    the pipeline, so every failure is caught here and logged as a warning."""
+    the pipeline. What triggers a report (an smtp config with at least one
+    to_address, merged from notifications.yaml by _merge_notifications) and
+    the subject/body content are unchanged; the actual SMTP connect-and-send
+    now delegates to common.send_mail(), which is itself best-effort and
+    never raises."""
     smtp_cfg = config.get("smtp") or {}
     to_addresses = smtp_cfg.get("to_addresses") or []
     if not smtp_cfg or not to_addresses:
@@ -236,17 +284,7 @@ def send_run_report(stage_name: str, summary: dict, config: dict):
     body = "\n".join(lines)
 
     status = "SUCCESS" if not summary.get("errors") else "COMPLETED WITH ERRORS"
-    msg = MIMEText(body)
-    msg["Subject"] = f"[Vyoma Pipeline] {stage_name} - {status} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
-    msg["From"] = smtp_cfg.get("from_address") or smtp_cfg.get("username", "")
-    msg["To"] = ", ".join(to_addresses)
+    subject = f"[Vyoma Pipeline] {stage_name} - {status} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
 
-    try:
-        with smtplib.SMTP(smtp_cfg["host"], smtp_cfg.get("port", 587), timeout=30) as server:
-            if smtp_cfg.get("use_tls", True):
-                server.starttls()
-            server.login(smtp_cfg["username"], smtp_cfg["app_password"])
-            server.sendmail(msg["From"], to_addresses, msg.as_string())
-        print(f"[INFO] Emailed run report for {stage_name} to {', '.join(to_addresses)}")
-    except Exception as e:
-        print(f"[WARN] Email report failed for {stage_name}: {e}")
+    notifications = config.get("_notifications") or {}
+    common.send_mail(notifications, subject, body, _PrintLogger())

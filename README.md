@@ -42,14 +42,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import common
 ```
 right after setting `sys.pycache_prefix` (see that pipeline's own script
-for the exact placement) and before any other local import. As of this
-consolidation, `enrollments_reports`, `country_wise_data`,
-`course_batch_merge`, `course_catalogue_data`, and
-`edmingle_api_key_generator` use it for credentials/notifications loading;
-`enrollments_reports` and `country_wise_data` also use its
-`RollingRateLimiter`. `attendance`, `session_wise_attendance`, and
-`ela_mis_datasets` have not been migrated yet -- they still carry their own
-copies of this logic.
+for the exact placement) and before any other local import. All 8
+pipelines now use it for credentials/notifications loading.
+`enrollments_reports`, `country_wise_data`, and `ela_mis_datasets` also
+use its `RollingRateLimiter`; `edmingle_student_course_sync.py` and
+`enrollments_reports/edmingle_export.py` also use its atomic-write/
+`format_duration`/`utc_now` helpers. `attendance.py` and
+`session_wise_attendance/pipeline_common.py` deliberately keep their own
+rate limiter/email-sending mechanics -- see each one's own `## Configuration`
+section for exactly why (different email format for attendance.py, a flat
+delay instead of a rolling window for pipeline_common.py).
 
 ## What's intentionally NOT shared
 
