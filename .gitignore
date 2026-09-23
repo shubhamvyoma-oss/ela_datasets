@@ -23,6 +23,10 @@ NOTIFICATIONS.md
 # Out of scope for this repo per prior instruction ("skip experiments/").
 experiments/
 
+# Real user-supplied input data (may contain PII -- names, emails,
+# phone numbers, addresses). Never committed.
+**/input/
+
 # OS cruft
 .DS_Store
 Thumbs.db

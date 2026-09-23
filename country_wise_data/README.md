@@ -1,81 +1,219 @@
-# Country-wise User Analytics Export
+# Country-wise User Analytics (3-stage: ip-driven + dial-code + merge)
 
 ## What this pipeline does
-This pipeline pulls a per-user list of country/region/engagement analytics from Edmingle, one row per user, and writes it to a local CSV. For each user it captures their user id, name, email, contact number, country, region, total time spent, total session count, and last-seen/created-at timestamps.
 
-This is a **different Edmingle endpoint** than the enrollment/attendance pipelines use (`/user/useranalyticslist`, a user-level analytics list — not enrollment records and not attendance records). It returns a `_id` per row that can be joined onto the enrollment file if needed, but it is not itself an enrollment or attendance export.
+Determines each student's country from two independent signals, then
+combines them into one file:
 
-**Note:** this data domain (per-user country/engagement analytics) was never part of the original 5 documented pipelines for this project. It is an additional, later-added export. Whoever owns the project's requirements/documentation should be told about it if it's meant to become a permanent, ongoing pipeline.
+1. **Stage 1 -- `ip_driven_country_data.py`**: pulls per-user analytics
+   from Edmingle's `/user/useranalyticslist` endpoint, one row per user,
+   including a country derived by Edmingle itself from the user's
+   geolocated IP (`geoLocationInfo.country`, via the `filter_key` config
+   and returned as `filterValue`). Also captures user id, name, email,
+   contact number, region, total time spent, session count, and
+   last-seen/created-at timestamps.
+2. **Stage 2 -- `dial_code_to_country.py`**: reads a manually-exported
+   `Student-Export*.csv` (dropped into `input/` by hand -- this is a
+   student roster export from Edmingle's admin panel, not fetched via the
+   API) and derives a country guess from each student's
+   `Contact Number Dial Code` (e.g. `+91` -> `India`).
+3. **Stage 3 -- `merge_country_data.py`**: joins Stage 1 and Stage 2's
+   output on email (case-insensitive) and produces one row per
+   Student-Export student with three country columns -- see "Merge logic"
+   below.
+
+This data domain (per-user country/engagement analytics) was never part of
+the original 5 documented pipelines for this project. It is an additional,
+later-added export -- whoever owns the project's requirements/documentation
+should be told about it if it's meant to become a permanent, ongoing
+pipeline.
 
 ## Folder layout
 
-This folder is split into two subfolders:
+This folder has three subfolders:
 
-- `scripts/` -- all source code: `edmingle_user_country_list_export_v3.py`
-  and `edmingle_user_country_list_config.json`. Run everything from inside
+- `scripts/` -- all source code: `ip_driven_country_data.py` (Stage 1),
+  `ip_driven_country_data_config.json`, `dial_code_to_country.py`
+  (Stage 2), `merge_country_data.py` (Stage 3). Run everything from inside
   `scripts/`.
-- `output/` -- generated data files: `user_country_list.csv` and (once the
-  script has run at least once) `user_country_list_checkpoint.json`.
+- `input/` -- **gitignored, real student PII** (names, emails, phone
+  numbers, addresses, parent contacts). Drop a fresh
+  `Student-Export*.csv` export here before running Stage 2. Nothing else
+  in this pipeline writes to `input/` -- it's for manually-supplied files
+  only.
+- `output/` -- everything the three scripts generate: `user_country_list.csv`
+  (+ its checkpoint, Stage 1), `Student-Export_with_country.csv` (Stage 2),
+  `merged_country_data.csv` (Stage 3, the final result).
 
 Compiled bytecode (`__pycache__`) for every pipeline under `ela_datasets/`
-is redirected to a single shared `ela_datasets/.pycache/` directory (via
-`sys.pycache_prefix`, set at the top of `edmingle_user_country_list_export_v3.py`
-before any third-party import) instead of a separate `__pycache__` folder
-per pipeline.
+is redirected to the single shared `ela_datasets/.pycache/` directory (via
+`sys.pycache_prefix`, set at the top of each of the 3 scripts) instead of a
+separate `__pycache__` folder per pipeline.
 
-## Edmingle endpoint used
-- `GET {base_url}/user/useranalyticslist`
-- Headers: `apikey`, `ORGID`
-- Query params: `page`, `per_page`, `is_export=0`, `filter_key` (e.g. `geoLocationInfo.country`), `sort_order`, `start_date`, `end_date`
+## Stage 1: `ip_driven_country_data.py`
 
-## Business rules that determine correct data
-- **Retry-with-rollback per page.** Each page is fetched with up to 5 retries (network errors and transient HTTP errors are retried with backoff; a 429 triggers a 300-second cooldown and resets the rate limiter; 400/401/403/404 are treated as permanent and not retried). If a page ultimately fails after retries are exhausted, the script stops immediately **without** writing that page's rows and **without** advancing the checkpoint. Nothing partial is ever committed, so a re-run resumes cleanly from the same page with no duplicate or skipped users.
-- **Crash-safe resume via byte-offset truncation.** Before each page is processed, the CSV's current byte size is tracked. Rows are appended to the CSV only after a successful fetch, and the checkpoint (last completed page + CSV byte offset + cumulative rows written) is saved immediately after, via atomic file replace. If the process dies between the CSV append and the checkpoint save, the next run truncates the CSV back to the last known-good checkpoint offset before resuming — this rolls back any partially-written rows from a crash and guarantees no duplicate/orphaned rows either way.
-- **Timestamps written both ways.** `last_seen` and `created_at` are written as raw epoch (`last_seen_epoch`, `created_at_epoch`, for machine use / re-processing) **and** as IST-formatted strings (`last_seen_ist`, `created_at_ist`, in `dd-mm-yyyy HH:MM:SS` format, matching the `enrollment_day` dd-mm-yyyy convention used elsewhere in this project). The epoch columns are never dropped, only supplemented with the formatted ones.
-- **Rate limit capped at 30 requests/minute** by default (`rate_limit_per_minute` in config), enforced by a sliding 60-second window.
-- **Windows file-lock retry (documented, not Linux-specific in effect).** File writes (CSV header, row appends, checkpoint save, truncate-on-resume) retry up to 6 times with exponential backoff on `PermissionError`/`OSError`. This is called out in the code as a known Windows condition — antivirus or OneDrive can transiently lock a just-written file — and is treated as a transient, retryable condition, not a real error.
+(Renamed from `edmingle_user_country_list_export_v3.py` -- same script,
+same behavior, new name reflecting what it actually produces: an
+IP-geolocation-driven country signal, to distinguish it from Stage 2's
+dial-code-driven guess.)
 
-## Configuration
+- **Endpoint:** `GET {base_url}/user/useranalyticslist`
+- Headers: `apikey`, `ORGID`. Query params: `page`, `per_page`,
+  `is_export=0`, `filter_key` (`geoLocationInfo.country`), `sort_order`,
+  `start_date`, `end_date`.
+- **Retry-with-rollback per page.** Up to 5 retries (backoff on
+  network/transient errors; 429 triggers a 300s cooldown and resets the
+  rate limiter; 400/401/403/404 are permanent, no retry). A page that
+  ultimately fails is never partially committed -- nothing is written and
+  the checkpoint doesn't advance, so a re-run resumes cleanly.
+- **Crash-safe resume via byte-offset truncation** -- same pattern used
+  throughout `ela_datasets/`: CSV byte size tracked before each page,
+  checkpoint saved atomically right after a successful append, truncate
+  back to the last good offset on resume.
+- **Timestamps written both ways**: epoch (`last_seen_epoch`,
+  `created_at_epoch`) and IST-formatted strings, epoch never dropped.
+- **Rate limit** 30 requests/minute by default, sliding 60s window.
 
-Credentials loading and the rate limiter now come from the shared `../../common.py`. The rate limiter's method changed from `wait_if_needed()` to `acquire()` (same blocking semantics) as part of that consolidation.
+### Configuration
 
-- `../../credentials.yaml` (shared, two levels up from `scripts/`, used by every pipeline under `ela_datasets/`): `edmingle.api_key` -> mapped to `apikey`, `edmingle.organization_id` -> mapped to `orgid`. These are merged into the config dict in memory at load time and are never read from this folder's own config file or from argv (per the fix made earlier today, which corrected a wrong-API-key bug).
-- `edmingle_user_country_list_config.json` (in `scripts/`) holds the non-credential settings: `base_url`, `filter_key`, `sort_order`, `per_page`, `start_date`, `end_date`, `rate_limit_per_minute`, `output_csv`, `checkpoint_file`.
-- There is **no** `notifications.yaml` use in this script — it has no email/alerting capability. On an unrecoverable page failure it logs the failure and exits with status 1; it does not send any notification.
+Credentials loading and the rate limiter come from the shared
+`../../common.py`.
 
-Current values in `edmingle_user_country_list_config.json`:
-```json
-{
-  "base_url": "https://vyoma-api.edmingle.com/nuSource/api/v1",
-  "filter_key": "geoLocationInfo.country",
-  "sort_order": -1,
-  "per_page": 500,
-  "start_date": "01-01-2020T00:00:00+05:30",
-  "end_date": "19-08-2026T23:59:59+05:30",
-  "rate_limit_per_minute": 30,
-  "output_csv": "user_country_list.csv",
-  "checkpoint_file": "user_country_list_checkpoint.json"
-}
-```
+- `../../credentials.yaml` (shared): `edmingle.api_key` -> `apikey`,
+  `edmingle.organization_id` -> `orgid`.
+- `ip_driven_country_data_config.json` (in `scripts/`, renamed from
+  `edmingle_user_country_list_config.json`): `base_url`, `filter_key`,
+  `sort_order`, `per_page`, `start_date`, `end_date`,
+  `rate_limit_per_minute`, `output_csv`, `checkpoint_file`.
+- No `notifications.yaml` -- no email/alerting capability. Failures log
+  and exit non-zero.
 
-## How to run
-From `scripts/` on the server:
-```
+### How to run
+
+```bash
 cd scripts
-python3 edmingle_user_country_list_export_v3.py --config edmingle_user_country_list_config.json
+python3 ip_driven_country_data.py --config ip_driven_country_data_config.json
 ```
-`--config` defaults to `edmingle_user_country_list_config.json` already, so it can also be run with no arguments from inside `scripts/`. The config path (if relative) is resolved relative to the script's own directory (`SCRIPT_DIR = Path(__file__).resolve().parent`), not the current working directory. The output CSV and checkpoint file are resolved relative to `SCRIPT_DIR.parent / "output"`, so they always land in `country_wise_data/output/` regardless of where the command is invoked from.
+`--config` already defaults to `ip_driven_country_data_config.json`, so it
+also runs with no arguments from inside `scripts/`. Safe to Ctrl+C or let a
+429 penalty run out -- re-run the same command, it resumes from checkpoint.
 
-It is safe to Ctrl+C or let a 429 penalty run out — just re-run the same command; the checkpoint/byte-offset logic resumes correctly.
+### Output
 
-## Output files produced
-Both written to `output/` (`country_wise_data/output/`):
-- `user_country_list.csv` — the per-user analytics rows. Columns: `user_id, name, email, contact_number, country, region, time_spent_seconds, total_sessions, last_seen_epoch, last_seen_ist, created_at_epoch, created_at_ist, source_page`.
-- `user_country_list_checkpoint.json` — resume state: `last_completed_page`, `csv_byte_offset`, `rows_written`. Not present until the script has been run at least once (as of this writing, only the CSV header exists in `output/` and no checkpoint file has been created yet).
+`output/user_country_list.csv` -- columns: `user_id, name, email,
+contact_number, country, region, time_spent_seconds, total_sessions,
+last_seen_epoch, last_seen_ist, created_at_epoch, created_at_ist,
+source_page`. `output/user_country_list_checkpoint.json` -- resume state.
+
+**As of this writing this script has never completed a real run** -- only
+the CSV header exists in `output/`, no data rows. Run it for real before
+Stage 3's merge will have any `ip_driven_country` matches.
+
+## Stage 2: `dial_code_to_country.py`
+
+Reads a manually-exported Edmingle student roster CSV and adds a country
+guess derived from the `Contact Number Dial Code` column (e.g. `+91` ->
+`India`, via the `phonenumbers`/`pycountry` packages). Does **not** touch
+any pre-existing `Country Name` column in the export (that column is
+essentially unused in practice -- blank in 129,884 of 130,188 rows in the
+current `Student-Export.csv`).
+
+- Handles a possible leading junk title line above the real header
+  (some Edmingle exports have one; the current `Student-Export.csv` does
+  not, but the script tolerates it either way).
+- Dial codes stored as `-`/blank -> blank result, not an error.
+- Where one dial code maps to multiple countries (e.g. `+1` -> US/Canada/etc,
+  `+44` -> UK, `+7` -> Russia/Kazakhstan), picks the primary/most common
+  country for that code (`phonenumbers`' own convention).
+
+### How to run
+
+```bash
+cd scripts
+python3 dial_code_to_country.py
+```
+With no `--input`, auto-picks the most recently modified file matching
+`Student-Export*.csv` in `../input/`. Drop a fresh export there and just
+re-run. `--input`/`--output`/`--dial-code-column` can override the
+defaults; both input and output default paths are resolved relative to
+this script's own location (`../input/`, `../output/`), not the caller's
+working directory.
+
+### Output
+
+`output/Student-Export_with_country.csv` -- every column from the input
+export, plus a new `Derived Country (Dial Code)` column (this becomes
+`dial_country` after Stage 3's merge renames it). On the current
+`Student-Export.csv` (130,188 rows): 90,939 rows got a derived country,
+39,249 were left blank (missing/`-`/unrecognized dial code).
+
+## Stage 3: `merge_country_data.py`
+
+Joins Stage 1 and Stage 2's output and produces the final three-column
+country picture.
+
+### Merge logic
+
+- **Join key: email only**, normalized (lowercase + trimmed). Chosen over
+  phone number because in `Student-Export.csv` only ~0.02% of rows have a
+  blank email vs. ~29% with a blank/dash Contact Number.
+- **Left join, Student-Export as the base**: every row from
+  `Student-Export_with_country.csv` is kept in the output. Wherever a
+  matching email is found in `user_country_list.csv`, `ip_driven_country`
+  is filled in from its `country` column; otherwise it's left blank.
+- **`final_country`: ip_driven_country wins whenever it's present** (a
+  direct, current geo-IP signal beats a dial-code guess). `dial_country`
+  is used only as a fallback when there's no ip-driven match for that
+  student at all. If neither source has a value, `final_country` is blank.
+- Duplicate emails in `user_country_list.csv` are logged as a warning and
+  the first row seen for that email is kept -- this shouldn't happen in
+  practice (one row per Edmingle user), but the script doesn't fail on it.
+
+### How to run
+
+Must run after both Stage 1 and Stage 2 have produced their output files
+(this script does not run either of them itself):
+```bash
+cd scripts
+python3 merge_country_data.py
+```
+`--dial-input`, `--ip-input`, `--output` can override the default paths
+(`../output/Student-Export_with_country.csv`, `../output/user_country_list.csv`,
+`../output/merged_country_data.csv`).
+
+### Output
+
+`output/merged_country_data.csv` -- every column from
+`Student-Export_with_country.csv` (with `Derived Country (Dial Code)`
+renamed to `dial_country`, not duplicated), plus `ip_driven_country` and
+`final_country` appended at the end. Prints a summary on every run: total
+rows, how many resolved via `ip_driven_country`, how many fell back to
+`dial_country`, and how many had no country from either source.
+
+**Known current-state caveat**: since Stage 1 has never completed a real
+run (see above), running Stage 3 today produces `ip_driven_country` blank
+for all 130,188 rows and `final_country` == `dial_country` everywhere.
+Run Stage 1 for real, then re-run Stage 3, to get a merge that actually
+exercises the override.
 
 ## Known limitations / things to watch for
-- **Not part of the original documented scope.** This is a newer/additional data pull that was never among the original 5 documented pipelines for this project. If it's meant to be permanent, the project's requirements documentation should be updated to include it.
-- **Referenced example config file doesn't exist.** The script's docstring/usage instructions tell a new user to copy `edmingle_user_country_list_config.example.json` to `edmingle_user_country_list_config.json` and fill it in, but no `.example.json` file currently exists in `scripts/`. The real config file already exists there and is in use, so this only matters for someone trying to bootstrap the pipeline from scratch.
-- **"Remaining rows" depends on the API.** The rows-remaining figure in each log line is computed from the API's own `total_rows` field in `page_context`; if a response doesn't include `total_rows`, remaining is logged as unknown until a page does include it.
-- **Permanent vs. transient error classification is fixed.** Only HTTP 400/401/403/404 are treated as permanent (no retry, page fails immediately); everything else (including unexpected 5xx codes) is retried up to 5 times with backoff before giving up.
-- **No email/alerting on failure.** Unlike pipelines that use a `notifications.yaml`, this script only logs to stdout/stderr and exits non-zero — failures need to be caught by whoever/whatever is monitoring the job, not by an automated alert from this script itself.
+
+- **Not part of the original documented scope.** Flag to whoever owns
+  project requirements if this 3-stage pipeline is meant to be permanent.
+- **`input/` is gitignored and never committed** -- `Student-Export*.csv`
+  contains real student PII. If you need to hand this data to someone
+  else, do it through a channel appropriate for PII, not via this repo.
+- **Referenced example config file doesn't exist**:
+  `ip_driven_country_data.py`'s docstring mentions copying
+  `ip_driven_country_data_config.example.json` -- no such file currently
+  exists in `scripts/`; the real config file is already there and in use.
+- **Stage 1's "remaining rows" depends on the API** returning `total_rows`
+  in `page_context`; logged as unknown otherwise.
+- **Stage 1 has no email/alerting on failure** -- logs to stdout/stderr
+  and exits non-zero only.
+- **Country name formats aren't normalized between the two sources.**
+  `dial_country` comes from `pycountry`'s official country names;
+  `ip_driven_country` comes verbatim from whatever Edmingle's own geo-IP
+  lookup returns as `filterValue`. These could disagree on formatting for
+  the same country (e.g. "United States" vs. "United States of America")
+  even when both are "correct" -- not reconciled by this pipeline.

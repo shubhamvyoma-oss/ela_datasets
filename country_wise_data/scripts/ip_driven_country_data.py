@@ -35,11 +35,11 @@ to the last known-good checkpoint offset before resuming, guaranteeing
 no duplicate or orphaned rows either way.
 
 USAGE
-  1. Copy edmingle_user_country_list_config.example.json ->
-     edmingle_user_country_list_config.json and fill in the non-credential
+  1. Copy ip_driven_country_data_config.example.json ->
+     ip_driven_country_data_config.json and fill in the non-credential
      settings (base_url, filter_key, dates, etc).
   2. Run:
-        python edmingle_user_country_list_export.py --config edmingle_user_country_list_config.json
+        python ip_driven_country_data.py --config ip_driven_country_data_config.json
   3. Safe to Ctrl+C / let a 429 penalty hit -- just re-run the same command.
 
 CREDENTIAL HYGIENE
@@ -136,7 +136,7 @@ def load_config(config_path: Path) -> dict:
     if not config_path.exists():
         sys.exit(
             f"Config file not found: {config_path}\n"
-            f"Copy edmingle_user_country_list_config.example.json to "
+            f"Copy ip_driven_country_data_config.example.json to "
             f"{config_path.name} and fill in your settings first."
         )
     with open(config_path, "r", encoding="utf-8") as f:
@@ -441,7 +441,7 @@ def run_collection(cfg: dict, script_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", type=str, default="edmingle_user_country_list_config.json",
+    parser.add_argument("--config", type=str, default="ip_driven_country_data_config.json",
                          help="Path to config JSON")
     args = parser.parse_args()
 

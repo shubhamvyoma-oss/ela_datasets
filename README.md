@@ -14,7 +14,7 @@ business rules.
 | `course_batch_merge/` | Catalogue merged with batches (all statuses) |
 | `session_wise_attendance/` | 3-stage funnel: catalogue -> class_id -> per-session attendance |
 | `ela_mis_datasets/` | Full student roster + course/attendance sync (68-80h run) |
-| `country_wise_data/` | Per-user country/engagement analytics |
+| `country_wise_data/` | 3-stage: ip-driven + dial-code country signals, merged |
 | `edmingle_api_key_generator/` | Rotates the shared Edmingle API key |
 
 ## Shared infrastructure
