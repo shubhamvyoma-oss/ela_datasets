@@ -16,11 +16,12 @@ This folder is split into two subfolders:
 - `scripts/` -- all source code and config: `edmingle_export.py` (the
   orchestrator/entry point -- also holds checkpoint load/save and log setup,
   inlined from the former `edmingle_checkpoint.py`/`edmingle_logger.py`,
-  each of which was a few lines wrapping a single stdlib/helper call),
-  `edmingle_config.py`, `edmingle_constants.py`, `edmingle_chunker.py`,
-  `edmingle_io_utils.py`, `edmingle_rate_limiter.py`, `edmingle_api.py`,
-  `edmingle_config.json`, `edmingle_config.json.example`, and
-  `notifications.yaml`. Run everything from inside `scripts/`.
+  each of which was a few lines wrapping a single stdlib/helper call, and
+  now also holds the settings that used to live in `edmingle_config.json`/
+  `edmingle_config.py`, both removed 2026-09-23 -- see "Configuration"),
+  `edmingle_constants.py`, `edmingle_chunker.py`, `edmingle_io_utils.py`,
+  `edmingle_rate_limiter.py`, `edmingle_api.py`, and `notifications.yaml`.
+  Run everything from inside `scripts/`.
 - `output/` -- everything generated at runtime: the enrollment CSVs, their
   matching `.csv.checkpoint.json` and `.csv.chunks.json` files, and the
   `.log` files. `edmingle_export.py` creates this folder automatically if
@@ -97,12 +98,15 @@ local import) instead of a separate `__pycache__` folder per pipeline.
 
 ## Configuration
 
-Credentials/notifications loading, the rate limiter, and the atomic-write helpers below now come from the shared `../../common.py` (see its docstring) rather than pipeline-local copies -- `edmingle_config.py` and `edmingle_io_utils.py` keep the same function names/signatures for backward compatibility, just delegating internally.
+Credentials/notifications loading, the rate limiter, and the atomic-write
+helpers all come from the shared `../../common.py` (see its docstring)
+rather than pipeline-local copies.
 
-- **`../../credentials.yaml`** (shared across all `ela_datasets/` pipelines):
-  `edmingle.api_key`, `edmingle.organization_id`. Loaded by
-  `edmingle_config.py`'s `load_credentials()`; the script exits with an
-  error if the file or either key is missing.
+- **`../../credentials.yaml`** (shared across all `ela_datasets/`
+  pipelines): `edmingle.api_key`, `edmingle.organization_id`. Loaded
+  directly via `common.load_credentials()` in `edmingle_export.py`'s
+  `EdmingleExportRun.__init__`; the script exits with a clear error if the
+  file or either key is missing.
 - **`notifications.yaml`** (in `scripts/`, permissions `600`): SMTP settings
   and recipients under `channels.email` (`enabled`, `smtp.host`,
   `smtp.port`, `smtp.username`, `smtp.password`, `smtp.from_address`,
@@ -110,13 +114,13 @@ Credentials/notifications loading, the rate limiter, and the atomic-write helper
   run logs a warning and skips sending -- it does not fail the run. (The
   file also has `channels.slack` / `channels.teams` blocks, both currently
   disabled/unused by this script.)
-- **`edmingle_config.json`** (in `scripts/`): as of today's centralization
-  this file's own current content is literally `{}` -- empty. Every setting
-  now falls back to the defaults in `edmingle_config.py`'s `DEFAULTS` dict,
-  since `load_config()` calls `.setdefault()` for each. `api_key` and
-  `organization_id` are no longer read from this file at all; they come
-  only from `../../credentials.yaml`. The settings still controllable here
-  (add any key to override its default) are:
+- **Tunables** (removed 2026-09-23: there is no longer a
+  `edmingle_config.json`/`.json.example`/`edmingle_config.py` -- that file's
+  own content was always literally `{}`, so every run already used these
+  same values; they're now the `DEFAULTS` dict inlined directly at the top
+  of `edmingle_export.py`). There is no config file or CLI flag for these --
+  edit the `DEFAULTS` dict in the script if a value genuinely needs to
+  change:
   - `chunk_days` (default 30)
   - `per_page` (default 200)
   - `max_calls_per_minute` (default 30)
@@ -124,9 +128,6 @@ Credentials/notifications loading, the rate limiter, and the atomic-write helper
   - `initial_retry_delay_seconds` (default 2)
   - `maximum_retry_delay_seconds` (default 60)
   - `rate_limit_block_seconds` (default 300)
-
-  `edmingle_config.json.example` in `scripts/` documents the same keys
-  with their default values as a template.
 
 ## Reliability features
 - **RollingRateLimiter** (`edmingle_rate_limiter.py`): a deque-based *true*
@@ -172,16 +173,14 @@ before it exits (see "Reliability features"). `--output` is optional -- if omitt
 filename is auto-derived from the date range (see below) and, regardless of
 the current working directory the script is invoked from, always lands in
 the `output/` folder next to `scripts/`. This is because `output_path`
-defaults to `config_path.parent.parent / "output" / <auto-name>` --
-`config_path.parent` is `scripts/` itself, so the extra `.parent` steps
-back up to the pipeline root before descending into `output/`. `config_path`
-itself defaults to `SCRIPT_DIR / "edmingle_config.json"` where `SCRIPT_DIR`
-is resolved from `Path(__file__).resolve().parent` -- i.e. the script's own
-folder (`scripts/`), not the caller's cwd. The `output/` folder is created
-automatically if it doesn't already exist.
+defaults to `SCRIPT_DIR.parent / "output" / <auto-name>` -- `SCRIPT_DIR` is
+`scripts/` itself (resolved from `Path(__file__).resolve().parent`, i.e.
+the script's own folder, not the caller's cwd), so the `.parent` step back
+up lands on the pipeline root before descending into `output/`. The
+`output/` folder is created automatically if it doesn't already exist.
 
 `--api-key` / `--org-id` can override the credentials file per-run if
-needed. `--config` can point at a different config JSON path if needed.
+needed.
 
 ## Output files produced
 All written into the `output/` folder (next to `scripts/`, not inside it),
@@ -241,9 +240,9 @@ If you need to keep a specific run's output permanently, pass
   `channels.email.enabled` is false or SMTP fields are incomplete in
   `notifications.yaml` -- a run can succeed or fail without you being
   notified if that file isn't fully configured.
-- `edmingle_config.json` is currently empty (`{}`); all tunables are at
-  their coded defaults. Add keys to this file to override any of them
-  (see Configuration above).
+- Tunables (`chunk_days`, `per_page`, etc.) are fixed defaults in the
+  `DEFAULTS` dict at the top of `edmingle_export.py` -- there is no config
+  file or CLI flag for them (see Configuration above).
 - `output/` used to accumulate one CSV (+checkpoint/chunks/log) per
   distinct date range ever run -- as of the fixed-filename change above,
   only the single most recent run's files exist, under

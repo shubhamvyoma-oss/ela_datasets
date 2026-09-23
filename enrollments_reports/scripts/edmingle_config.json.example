@@ -1,9 +1,0 @@
-{
-  "chunk_days": 30,
-  "per_page": 200,
-  "max_calls_per_minute": 30,
-  "request_timeout_seconds": 30,
-  "initial_retry_delay_seconds": 2,
-  "maximum_retry_delay_seconds": 60,
-  "rate_limit_block_seconds": 300
-}

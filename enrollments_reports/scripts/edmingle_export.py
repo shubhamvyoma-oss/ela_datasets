@@ -22,8 +22,9 @@ Rebuilt around the patterns in edmingle_student_course_sync.py:
     backoff) — see edmingle_api.py.
   - Progress is logged with elapsed/ETA using format_duration(), not just a
     running row count.
-  - Settings live in edmingle_config.json (with defaults) rather than a long
-    list of CLI flags; only --start-date/--end-date genuinely vary per run.
+  - Settings are fixed defaults inlined below (DEFAULTS) rather than a
+    config file or a long list of CLI flags; only --start-date/--end-date
+    genuinely vary per run.
 
 Usage:
     python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
@@ -61,15 +62,36 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import common
 from common import RollingRateLimiter, atomic_write_json
 
 from edmingle_api import PermanentAPIError, fetch_page
 from edmingle_chunker import load_or_create_chunk_plan
-from edmingle_config import load_config, send_mail
 from edmingle_constants import FIELDS
 from edmingle_io_utils import format_duration, truncate_to_offset
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Was edmingle_config.json -- that file's only real content was ever "{}"
+# (every pipeline run fell back to these same defaults), so the file, its
+# .example twin, and the edmingle_config.py module that loaded it are gone;
+# these are now the single source of truth. Override at the call site if a
+# run ever genuinely needs different values (there is no CLI flag for
+# these -- add one if that need actually arises).
+DEFAULTS = {
+    "chunk_days": 30,
+    "per_page": 200,
+    "max_calls_per_minute": 30,
+    "request_timeout_seconds": 30,
+    "initial_retry_delay_seconds": 2,
+    "maximum_retry_delay_seconds": 60,
+    "rate_limit_block_seconds": 300,
+}
+
+
+def send_mail(subject: str, body: str, logger: logging.Logger) -> None:
+    notifications = common.load_notifications(SCRIPT_DIR)
+    common.send_mail(notifications, subject, body, logger)
 
 
 def load_checkpoint(path: Path) -> dict | None:
@@ -114,7 +136,6 @@ def build_default_output_name(start_date: str, end_date: str) -> str:
 class EdmingleExportRun:
     def __init__(
         self,
-        config_path: Path,
         start_date: str,
         end_date: str,
         output: str | None = None,
@@ -124,14 +145,26 @@ class EdmingleExportRun:
         sleep=time.sleep,
         logger=None,
     ) -> None:
-        self.config_path = Path(config_path).resolve()
-        self.config = load_config(self.config_path)
+        credentials_path = SCRIPT_DIR.parent.parent / "credentials.yaml"
+        if not credentials_path.exists():
+            sys.exit(f"Shared credentials file not found: {credentials_path}")
+        edmingle_cfg = common.load_credentials(credentials_path)
+        required = ["api_key", "organization_id"]
+        missing = [key for key in required if not edmingle_cfg.get(key)]
+        if missing:
+            sys.exit(
+                f"Credentials file {credentials_path} is missing required "
+                f"edmingle keys: {', '.join(missing)}"
+            )
+        self.config = dict(DEFAULTS)
+        self.config["api_key"] = edmingle_cfg["api_key"]
+        self.config["organization_id"] = edmingle_cfg["organization_id"]
         self.start_date = start_date
         self.end_date = end_date
         self.api_key = api_key or self.config["api_key"]
         self.org_id = org_id or self.config["organization_id"]
 
-        self.output_path = Path(output) if output else self.config_path.parent.parent / "output" / build_default_output_name(
+        self.output_path = Path(output) if output else SCRIPT_DIR.parent / "output" / build_default_output_name(
             start_date, end_date)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.checkpoint_path = self.output_path.with_suffix(self.output_path.suffix + ".checkpoint.json")
@@ -320,8 +353,6 @@ def parse_args():
     parser.add_argument("--end-date", help="DD-MM-YYYY")
     parser.add_argument("--output", default=None,
                          help="Output CSV path (default: auto-named from dates, saved next to this script)")
-    parser.add_argument("--config", default=str(SCRIPT_DIR / "edmingle_config.json"),
-                         help="Path to config JSON (default: %(default)s)")
     parser.add_argument("--api-key", default=None, help="Override api_key from config")
     parser.add_argument("--org-id", default=None, type=int, help="Override organization_id from config")
     return parser.parse_args()
@@ -329,13 +360,12 @@ def parse_args():
 
 def main() -> int:
     args = parse_args()
-    config_path = Path(args.config)
 
     if not args.start_date or not args.end_date:
         sys.exit("--start-date and --end-date are required (DD-MM-YYYY).")
 
     run = EdmingleExportRun(
-        config_path, args.start_date, args.end_date,
+        args.start_date, args.end_date,
         output=args.output, api_key=args.api_key, org_id=args.org_id,
     )
 
@@ -347,7 +377,6 @@ def main() -> int:
         # notify immediately rather than retrying blindly.
         run.logger.error("Edmingle export stopped: permanent API error")
         send_mail(
-            run.config,
             subject="Edmingle export FAILED (permanent error)",
             body=(f"edmingle_export.py stopped and will not retry on its own: {exc}\n\n"
                   f"This is not a transient issue (bad credentials, wrong org id, or a "
@@ -362,7 +391,6 @@ def main() -> int:
     except Exception:
         run.logger.exception("Edmingle export run failed")
         send_mail(
-            run.config,
             subject="Edmingle export CRASHED",
             body=(f"edmingle_export.py crashed unexpectedly.\n\n"
                   f"Check {run.log_path} on the VPS for the traceback.\n\n"
