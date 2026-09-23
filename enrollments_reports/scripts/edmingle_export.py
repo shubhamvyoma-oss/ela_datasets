@@ -118,7 +118,6 @@ class EdmingleExportRun:
         org_id: int | None = None,
         session: requests.Session | None = None,
         sleep=time.sleep,
-        clock=time.monotonic,
         logger=None,
     ) -> None:
         self.config_path = Path(config_path).resolve()
@@ -139,7 +138,7 @@ class EdmingleExportRun:
         self.session = session or requests.Session()
         self.sleep = sleep
         self.rate_limiter = RollingRateLimiter(
-            int(self.config["max_calls_per_minute"]), 60.0, self.logger, clock=clock, sleep=sleep,
+            int(self.config["max_calls_per_minute"]), 60.0, self.logger,
         )
 
     def _checkpoint_dict(self, chunk_index, last_page_completed, total_written,
@@ -225,7 +224,7 @@ class EdmingleExportRun:
         else:
             file_mode = "w"
 
-        run_started = self.rate_limiter.clock()
+        run_started = time.monotonic()
         chunks_completed_this_run = 0
 
         with self.output_path.open(file_mode, newline="", encoding="utf-8") as fh:
@@ -289,7 +288,7 @@ class EdmingleExportRun:
                     page += 1
 
                 chunks_completed_this_run += 1
-                elapsed = self.rate_limiter.clock() - run_started
+                elapsed = time.monotonic() - run_started
                 if (chunks_completed_this_run == 1 or (chunk_idx + 1) % 10 == 0
                         or chunk_idx + 1 == len(chunks)):
                     avg = elapsed / chunks_completed_this_run

@@ -25,10 +25,16 @@ import logging
 import time
 from typing import Any, Callable
 
+import os
+import sys
+from pathlib import Path
+
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common import RollingRateLimiter
+
 from edmingle_constants import BASE_URL, PERMANENT_HTTP_STATUSES, TRANSIENT_HTTP_STATUSES
-from edmingle_rate_limiter import RollingRateLimiter
 
 
 class PermanentAPIError(RuntimeError):
