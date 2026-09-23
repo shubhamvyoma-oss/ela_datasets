@@ -32,9 +32,13 @@ Usage:
     output/edmingle_enrollment_report.csv, overwritten on every run --
     pass --output explicitly if you need to keep a specific run's file.)
 
-Meant to be launched via edmingle_watchdog.sh, which restarts this script
-if it exits non-zero — the checkpoint means a restart always resumes
-cleanly rather than re-fetching or duplicating data.
+Run directly (no watchdog/auto-restart wrapper -- removed 2026-09-23,
+matching edmingle_student_course_sync.py's pattern in ela_mis_datasets,
+which has never used one). If it crashes or the server restarts, just
+re-run the same command: the checkpoint means it resumes cleanly rather
+than re-fetching or duplicating data. A permanent error or unexpected
+crash emails immediately from inside main()'s own exception handling
+before exiting -- see the except blocks below.
 """
 
 import argparse
@@ -320,30 +324,12 @@ def parse_args():
                          help="Path to config JSON (default: %(default)s)")
     parser.add_argument("--api-key", default=None, help="Override api_key from config")
     parser.add_argument("--org-id", default=None, type=int, help="Override organization_id from config")
-    parser.add_argument("--notify-failure", action="store_true",
-                         help=argparse.SUPPRESS)  # used internally by edmingle_watchdog.sh
-    parser.add_argument("--failure-attempts", default=0, type=int, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     config_path = Path(args.config)
-
-    if args.notify_failure:
-        cfg = load_config(config_path)
-        output_dir = config_path.parent.parent / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        logger = setup_logging(output_dir / "edmingle_export.log")
-        send_mail(
-            cfg,
-            subject="Edmingle export FAILED",
-            body=(f"edmingle_export.py could not complete after "
-                  f"{args.failure_attempts} restart attempts by the watchdog.\n"
-                  f"Check the .log file next to the output CSV on the VPS for details."),
-            logger=logger,
-        )
-        return 0
 
     if not args.start_date or not args.end_date:
         sys.exit("--start-date and --end-date are required (DD-MM-YYYY).")
@@ -355,16 +341,36 @@ def main() -> int:
 
     try:
         run.run()
-    except PermanentAPIError:
+    except PermanentAPIError as exc:
         # Already logged with full detail inside fetch_page. Retrying won't
-        # help (bad credentials, wrong org id, wrong endpoint) so stop here
-        # rather than let the watchdog burn through restarts uselessly.
+        # help (bad credentials, wrong org id, wrong endpoint) -- stop and
+        # notify immediately rather than retrying blindly.
+        run.logger.error("Edmingle export stopped: permanent API error")
+        send_mail(
+            run.config,
+            subject="Edmingle export FAILED (permanent error)",
+            body=(f"edmingle_export.py stopped and will not retry on its own: {exc}\n\n"
+                  f"This is not a transient issue (bad credentials, wrong org id, or a "
+                  f"wrong/changed endpoint) -- fix the underlying problem before re-running.\n"
+                  f"Check {run.log_path} on the VPS for the full detail."),
+            logger=run.logger,
+        )
         return 1
     except KeyboardInterrupt:
         run.logger.warning("Run interrupted; the next run will resume from the saved checkpoint.")
         return 130
     except Exception:
         run.logger.exception("Edmingle export run failed")
+        send_mail(
+            run.config,
+            subject="Edmingle export CRASHED",
+            body=(f"edmingle_export.py crashed unexpectedly.\n\n"
+                  f"Check {run.log_path} on the VPS for the traceback.\n\n"
+                  f"To resume: SSH into the VPS, cd into this pipeline's scripts/ folder, and "
+                  f"re-run the same command -- it will resume from the last saved checkpoint "
+                  f"rather than starting over."),
+            logger=run.logger,
+        )
         return 1
     return 0
 

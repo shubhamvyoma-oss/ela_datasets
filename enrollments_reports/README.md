@@ -19,9 +19,8 @@ This folder is split into two subfolders:
   each of which was a few lines wrapping a single stdlib/helper call),
   `edmingle_config.py`, `edmingle_constants.py`, `edmingle_chunker.py`,
   `edmingle_io_utils.py`, `edmingle_rate_limiter.py`, `edmingle_api.py`,
-  `edmingle_config.json`, `edmingle_config.json.example`,
-  `edmingle_watchdog.sh`, and `notifications.yaml`. Run everything from
-  inside `scripts/`.
+  `edmingle_config.json`, `edmingle_config.json.example`, and
+  `notifications.yaml`. Run everything from inside `scripts/`.
 - `output/` -- everything generated at runtime: the enrollment CSVs, their
   matching `.csv.checkpoint.json` and `.csv.chunks.json` files, and the
   `.log` files. `edmingle_export.py` creates this folder automatically if
@@ -91,8 +90,10 @@ local import) instead of a separate `__pycache__` folder per pipeline.
   Everything else (408/429-follow-up/5xx, network errors, invalid JSON,
   unexpected response shape) is retried forever with exponential backoff
   capped at `maximum_retry_delay_seconds` -- there's no internal retry-count
-  limit; the external watchdog script is the safety net for a truly stuck
-  process.
+  limit. A permanent error emails immediately and stops (see "How to run" --
+  there is no external watchdog/auto-restart; a stuck or crashed process is
+  handled by manually re-running the same command, which resumes from
+  checkpoint, the same pattern `ela_mis_datasets` uses).
 
 ## Configuration
 
@@ -142,25 +143,32 @@ Credentials/notifications loading, the rate limiter, and the atomic-write helper
   checkpoint and chunk-plan files are written to a temp file, `fsync`'d,
   then swapped into place with `os.replace()` -- a crash mid-write can
   never leave a half-written/corrupt `.checkpoint.json` or `.chunks.json`.
-- **`edmingle_watchdog.sh`**: a shell wrapper meant to be run inside tmux.
-  It launches `edmingle_export.py` and, if the process exits non-zero,
-  restarts it automatically with exponential backoff (starts at 10s,
-  doubles each crash, capped at 300s), up to `MAX_RESTARTS=30` consecutive
-  crashes. On success (`exit 0`) it stops. If it exhausts all restarts it
-  sends a failure email (via `--notify-failure`) and exits 1.
+- **No external watchdog/auto-restart (changed 2026-09-23).** This pipeline
+  used to run under `edmingle_watchdog.sh`, a shell wrapper that restarted
+  the script on any non-zero exit and only emailed failure after burning
+  through 30 restart attempts -- which meant a genuinely permanent error
+  (e.g. an expired key) still wasted up to ~2.5 hours of growing backoff
+  before anyone was told. The watchdog is removed; `main()` now emails
+  failure directly from its own exception handling the moment a permanent
+  error or unexpected crash happens, matching the pattern already used in
+  `ela_mis_datasets` (that pipeline has never used an external watchdog --
+  it catches its own crash and emails from inside the `except` block). A
+  crash is recovered the same way as before: just re-run the same command;
+  the checkpoint makes it resume rather than start over.
 
 ## How to run
-Run from inside `scripts/`:
-```bash
-cd scripts
-./edmingle_watchdog.sh --start-date 01-01-2010 --end-date 06-08-2026
-```
-or directly (no auto-restart on crash):
+Run from inside `scripts/`, in `tmux` for a long historical range so it
+survives an SSH disconnect:
 ```bash
 cd scripts
 python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
 ```
-Dates are `DD-MM-YYYY`. `--output` is optional -- if omitted, the output
+Dates are `DD-MM-YYYY`. There is no watchdog/auto-restart wrapper -- if the
+process crashes or the server reboots, re-run the exact same command; the
+checkpoint resumes it from the last confirmed byte offset rather than
+starting over. A permanent error (bad key/org id/endpoint) or an unexpected
+crash sends a failure email immediately from inside the script itself
+before it exits (see "Reliability features"). `--output` is optional -- if omitted, the output
 filename is auto-derived from the date range (see below) and, regardless of
 the current working directory the script is invoked from, always lands in
 the `output/` folder next to `scripts/`. This is because `output_path`
@@ -204,9 +212,10 @@ This is safe with the existing resume logic without any other change,
 because `_resolve_resume_state()` already compares the *checkpoint's own*
 recorded `start_date`/`end_date`/`chunk_days`/`per_page` against the current
 run's arguments, not the filename:
-- Rerunning the **same** date range after a crash (e.g. via
-  `edmingle_watchdog.sh`) still matches the checkpoint and resumes by
-  truncating back to the last confirmed byte offset, exactly as before.
+- Rerunning the **same** date range after a crash (just re-run the same
+  command by hand -- there is no watchdog) still matches the checkpoint
+  and resumes by truncating back to the last confirmed byte offset,
+  exactly as before.
 - Running a **different** date range already logged "starting fresh
   (existing output file will be overwritten)" and used write mode -- that
   behavior is unchanged, it just now always targets the same filename
@@ -222,16 +231,12 @@ If you need to keep a specific run's output permanently, pass
 - Running with different `chunk_days` or `per_page` for the same date range
   silently starts fresh and **overwrites** the existing output CSV for that
   range -- there's no separate confirmation prompt.
-- `edmingle_watchdog.sh` restarts on *any* non-zero exit code except the
-  case where `edmingle_export.py` itself detects a `PermanentAPIError` (bad
-  API key/org id/endpoint), which also returns exit 1 -- so a genuinely
-  unrecoverable credential problem still burns through all 30 restart
-  attempts (with growing backoff) before the watchdog gives up and emails
-  failure, rather than failing fast. Check the `.log` file to distinguish a
-  permanent-config problem from a transient network issue.
 - Retries for transient errors are unbounded in `edmingle_api.py` itself
-  (backoff capped, but no retry-count ceiling) -- the watchdog's restart
-  cap is the only outer limit on a truly stuck run.
+  (backoff capped, but no retry-count ceiling) -- since there is no
+  external watchdog anymore, a transient issue that never clears (e.g. a
+  sustained network outage) will retry forever rather than eventually
+  giving up and notifying anyone. Check the `.log` file, or the process
+  list, if a run seems to be running much longer than expected.
 - Email notifications silently no-op (with a logged warning) if
   `channels.email.enabled` is false or SMTP fields are incomplete in
   `notifications.yaml` -- a run can succeed or fail without you being
