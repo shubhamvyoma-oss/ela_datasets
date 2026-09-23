@@ -157,11 +157,24 @@ STUDENT_FIELDS = [
     "status",                       # account status code
     "time",                         # registration time
     "user_id",                      # Edmingle unique user identifier
-    "user_username",                # login username
-    "PhoneNumber",                  # custom registration field — alternate phone
-    "Age",                          # custom registration field — student age
-    "LastName",                     # custom registration field — last name
-    "UserName",                     # custom registration field — display name
+    "user_username",                # login username (native field -- already
+                                     # covers what a "UserName" custom-field
+                                     # column would duplicate; see removed
+                                     # column note below)
+    "PhoneNumber",                  # custom field "phone_number_text" (International Phone Number)
+    "Age",                          # custom field "age_dropdown" (the only age field
+                                     # actually visible/mandatory on the live signup
+                                     # form -- "age" and "user_age" are legacy fields
+                                     # hidden from every form, confirmed via a live
+                                     # API sample on 2026-09-23)
+    "LastName",                     # custom field "user_last_name" (User Last Name)
+    # "UserName" removed 2026-09-23: was read from customfield_data by list
+    # POSITION (index 0), not by name -- wrong for the vast majority of
+    # students since the list's order/length varies per student (confirmed:
+    # was >99% blank/garbage). The native "user_username" column above
+    # already gives every student's actual username (100% populated),
+    # making a separate custom-field-based "UserName" column redundant even
+    # once fixed to look up by name instead of position.
 ]
 
 # Columns saved to edmingle_course_enrollments.csv — one row per class session per student
@@ -436,11 +449,26 @@ def extract_student(student: dict[str, Any]) -> dict[str, Any]:
     row = {field: student.get(field, "") for field in STUDENT_FIELDS}
     custom_fields = student.get("customfield_data")
     if isinstance(custom_fields, list):
-        # Custom fields are position-based in the API response
-        index_mapping = {"PhoneNumber": 19, "Age": 9, "LastName": 6, "UserName": 0}
-        for field, index in index_mapping.items():
-            if index < len(custom_fields) and isinstance(custom_fields[index], dict):
-                row[field] = custom_fields[index].get("field_value", "")
+        # customfield_data is a variable-length list whose order and length
+        # differ per student (each entry only appears if that student's
+        # organization form config includes it and, for some fields, only
+        # if the student filled it in) -- there is no stable position to
+        # index into. Build a name -> value lookup instead and match on
+        # each field's own "field_name" key, confirmed via a live API
+        # sample on 2026-09-23 (see git history for the raw sample).
+        by_name = {
+            cf.get("field_name"): cf.get("field_value", "")
+            for cf in custom_fields
+            if isinstance(cf, dict)
+        }
+        name_mapping = {
+            "PhoneNumber": "phone_number_text",
+            "Age": "age_dropdown",
+            "LastName": "user_last_name",
+        }
+        for field, source_name in name_mapping.items():
+            if source_name in by_name:
+                row[field] = by_name[source_name]
     return row
 
 

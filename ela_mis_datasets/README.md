@@ -54,13 +54,11 @@ Both calls authenticate via headers `apikey` and `ORGID` built from `../../crede
 
 ## Business rules that determine correct data
 
-- **Custom fields are position-based, not name-based.** Edmingle returns each student's custom registration fields as a plain list (`customfield_data`) with no field names -- the meaning of each entry is only its position in that list. `extract_student()` maps them via a fixed `index_mapping`:
-  - index `19` -> `PhoneNumber`
-  - index `9` -> `Age`
-  - index `6` -> `LastName`
-  - index `0` -> `UserName`
-
-  If Edmingle ever changes the order/count of custom fields returned for the organization, these indices would silently map to the wrong values -- there is no name-based fallback.
+- **Custom fields are matched by name, not position (fixed 2026-09-23).** `customfield_data` is a variable-length list whose order AND length differ per student (a field is only present if that student's org form config includes it, and for optional fields, only if they filled it in) -- there is no stable position to index into. A live sample confirmed a real student had 30 entries in a different order than assumed by the old fixed-index mapping, which is why `Age`/`UserName`/`PhoneNumber`/`LastName` were previously wrong for over 99% of the 127,210-row student file (confirmed against production data: `Age` held learner-type text like professionals, `UserName` held phone numbers, `PhoneNumber` held homemakers/professionals, `LastName` held No). `extract_student()` now builds a `field_name -> field_value` lookup from `customfield_data` and matches by name:
+  - `phone_number_text` (form label International Phone Number) -> `PhoneNumber`
+  - `age_dropdown` (form label Age , a dropdown of real age brackets) -> `Age`. Two other age-shaped fields exist on this org's form (`age`, `user_age`) but both are hidden from every registration form (`show_online`/`show_offline` both 0) -- `age_dropdown` is the only one a real registrant can actually fill in.
+  - `user_last_name` (form label User Last Name) -> `LastName`
+  - `UserName` **removed entirely** -- it was sourced from the `username` custom field by position, but the native `user_username` API field (already a separate STUDENT_FIELDS column, 100% populated) already covers this; keeping a second, custom-field-based column was redundant even once fixed to match by name.
 
 - **Student de-dup is last-write-wins by `user_id`.** `merge_students()` builds a dict keyed by `user_id`; existing rows are loaded first, then newly fetched rows are applied on top, so a freshly fetched row always overwrites an older stored row for the same `user_id`. Rows with an empty `user_id` are silently dropped.
 
@@ -111,6 +109,7 @@ All are anchored to `output/` regardless of invocation cwd.
 
 - The 68-80 hour runtime for a full run is **inherent to the one-call-per-student course/attendance rebuild**, not a bug -- there is no batch/bulk attendance endpoint in use.
 - The course/enrollment pull is a **full rebuild every run**, not incremental -- the entire student list snapshot is re-walked each time, even though the roster sync itself is incremental with overlap.
-- The custom-field `index_mapping` (see Business Rules) is fragile: it depends on Edmingle always returning `customfield_data` in the same fixed order for this organization. There is no defensive check if the API response shape changes.
+- **Historical data note:** every `edmingle_students.csv` row written before 2026-09-23 has wrong/blank `Age`/`PhoneNumber`/`LastName` values from the old position-based bug (see Business Rules) -- these only get corrected in each row the next time a full sync re-fetches that student (the roster sync overlaps/re-walks recent pages every run, but older untouched pages won't self-correct until the next full historical run touches them).
+- Custom fields are still matched by their Edmingle `field_name` string (see Business Rules) -- if Edmingle ever renames a `field_name` on this org's form, that specific mapping would silently start returning blank (not wrong data, since a missing key just leaves the column at its default) rather than crashing.
 - Legacy migration logic (`legacy_student_master` / `students_data_2.csv`, `legacy_course_master` / `studentCoursesEnrolled.csv`, `legacy_page_state` / `PageNo.txt`) exists only to migrate one old script's output format into the new one on first run after upgrade -- it is not part of the ongoing pipeline and does nothing once the new-format files exist.
 - The API-key startup validation call treats any non-200/400/401/403 response as a warning, not a failure, so it will proceed even if the key check response was unexpected (e.g. a 5xx) rather than blocking the run.
