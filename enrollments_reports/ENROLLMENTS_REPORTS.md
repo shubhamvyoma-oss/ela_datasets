@@ -159,18 +159,28 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml`.
-2. Populate `notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
-3. `pip install requests pyyaml`.
-4. **Fix the `send_mail(self.config, ...)` defect (Section 9) before the next run** — as written, it will crash with a `TypeError` at the first "started" email.
-5. **For a long historical range, run inside `tmux`** so the process survives an SSH disconnect — there's no watchdog/auto-restart; a crash requires manually re-running the same command (it resumes from checkpoint).
+**Step by step:**
+1. **Fix the `send_mail(self.config, ...)` defect (Section 9) before the next run** — as written,
+   it will crash with a `TypeError` at the first "started" email.
+2. `tmux new -s enrollments` — recommended for a long historical range, so the process survives
+   an SSH disconnect. There's no watchdog/auto-restart; a crash requires manually re-running the
+   same command (it resumes from checkpoint).
+3. Inside the session: `source /home/projectdev/ela_datasets/.venv/bin/activate` — your prompt
+   shows `(.venv)` when active; a plain `python3` after this already has `requests`, `pyyaml`
+   installed, so no `pip install` step is needed.
+4. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
+5. Populate `notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+6. `cd /home/projectdev/ela_datasets/enrollments_reports/scripts` and run the command below.
+   **Dates are `DD-MM-YYYY`** — the one pipeline in this repo that differs from every other
+   pipeline's `YYYY-MM-DD`, because it's what Edmingle's own API for this endpoint expects.
 
 ```bash
-cd /home/projectdev/ela_datasets/enrollments_reports/scripts
 tmux new -s enrollments
+source /home/projectdev/ela_datasets/.venv/bin/activate
+cd /home/projectdev/ela_datasets/enrollments_reports/scripts
 python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
 ```
-Dates are `DD-MM-YYYY`. `--output` overrides the fixed default filename and its companions.
+`--output` overrides the fixed default filename and its companions.
 
 ## 13. Automation / Scheduling
 

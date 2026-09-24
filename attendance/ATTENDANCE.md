@@ -230,14 +230,23 @@ Docstring states: `pip install pandas requests pyyaml`.
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml` (`edmingle.api_key`, `edmingle.organization_id`).
-2. Populate `notifications.yaml` if email alerts are wanted (currently placeholders).
-3. `pip install pandas requests pyyaml`.
+**Step by step:**
+1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
+   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `pandas`,
+   `requests`, `pyyaml` installed, so no `pip install` step is needed.
+2. Populate `../../credentials.yaml` (`edmingle.api_key`, `edmingle.organization_id`) — shared by
+   every pipeline, so this is likely already done.
+3. Populate `notifications.yaml` if email alerts are wanted (currently placeholders).
 4. Check `config.yaml` flags match intent (`exclude_inactive_students` is currently `false` here).
-5. Run from `attendance/scripts/`, or pass `--config` with a full path.
-6. **For large date ranges, run inside `tmux`/`screen`.** At the pipeline's own documented rate (~7.5s/day, from its 546-day/~68-minute docstring example), a multi-year range — like the 2020-01-01 to 2026-07-30 range behind the one output file currently in `output/` — takes roughly 5 hours. Running it in a detached session avoids losing the run to an SSH disconnect. A routine single-day/incremental run does not need this.
+5. `cd /home/projectdev/ela_datasets/attendance/scripts` and run one of the commands below.
+6. **For large date ranges, run inside `tmux`/`screen`.** At the pipeline's own documented rate
+   (~7.5s/day, from its 546-day/~68-minute docstring example), a multi-year range — like the
+   2020-01-01 to 2026-07-30 range behind the one output file currently in `output/` — takes
+   roughly 5 hours. Running it in a detached session avoids losing the run to an SSH disconnect.
+   A routine single-day/incremental run does not need this.
 
 ```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/attendance/scripts
 python3 attendance.py --from 2026-01-01 --to 2026-01-31
 python3 attendance.py --date 2026-06-15

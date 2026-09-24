@@ -153,10 +153,21 @@ design. The key value is structurally prevented from appearing in any log/print/
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml`'s `tutor_login` block (blank username/password forces an interactive prompt).
-2. Populate this folder's `notifications.yaml` with valid SMTP settings and at least one recipient.
-3. `pip install -r requirements.txt` (from `scripts/`).
-4. Neither credentials file should ever be committed.
+Unlike the other 7 pipelines, this tool is meant to run standalone (it's a manual, occasional key
+rotation, not a scheduled data pull), so it has its own `requirements.txt` rather than relying on
+the shared repo-root `.venv/` — either works, since both provide the same `requests`/`PyYAML`.
+
+**Step by step (on the VPS, using the shared venv):**
+1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session.
+2. Populate `../../credentials.yaml`'s `tutor_login` block (blank username/password forces an
+   interactive prompt).
+3. Populate this folder's `notifications.yaml` with valid SMTP settings and at least one recipient.
+4. `cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts` and run a command below.
+
+**Or, running it standalone (e.g. on a Windows machine, via its own `requirements.txt`):**
+1. `pip install -r requirements.txt` (from `scripts/`).
+2. Steps 2–3 above (populate both credential files — neither should ever be committed).
+3. Double-click `run_generate_and_email_api_key.bat`, or run the commands below directly.
 
 ```bash
 # Full real run (rotates the live key and emails it)

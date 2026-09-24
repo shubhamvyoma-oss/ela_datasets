@@ -200,19 +200,26 @@ lacks it) — exact invocation environment requires confirmation.
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml` (`api_key`, `organization_id`, `institute_id`).
-2. Populate `notifications.yaml` if run-report emails are wanted (note the placeholder-address issue above).
-3. Install `pandas`, `requests`, `PyYAML` (via the repo-root Docker setup or an equivalent local environment).
-4. Run all three stages in order whenever upstream data changes.
+**Step by step:**
+1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
+   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `pandas`,
+   `requests`, `PyYAML` installed, so no separate install step is needed.
+2. Populate `../../credentials.yaml` (`api_key`, `organization_id`, `institute_id`) — shared by
+   every pipeline, likely already done.
+3. Populate `notifications.yaml` if run-report emails are wanted (note the placeholder-address
+   issue above).
+4. `cd /home/projectdev/ela_datasets/session_wise_attendance/scripts` and run all three stages in
+   order whenever upstream data changes — each stage needs the previous one's output.
 
 ```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
-python build_course_catalog.py
-python resolve_class_ids.py
-python build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD
+python3 build_course_catalog.py
+python3 resolve_class_ids.py
+python3 build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD
 
 # Standalone spot-check (not part of the ordered run)
-python attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end YYYY-MM-DD
+python3 attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end YYYY-MM-DD
 ```
 Resume after a crash/429/Ctrl+C: re-run the same command — Stages 2/3 auto-skip already-processed
 rows. `--restart` wipes prior progress. Stage 1 has no row-level resume; a crash means starting over.

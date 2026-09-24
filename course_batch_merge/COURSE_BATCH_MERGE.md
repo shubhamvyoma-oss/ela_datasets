@@ -179,11 +179,19 @@ without writing a CSV. Example real log line: `11:49:39 - SUCCESS! Saved 3193 ro
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml` (`institute_id` is loaded but unused).
-2. `pip install requests pandas`.
-3. No config file, `input/` folder, or notification setup needed.
+**Step by step:**
+1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
+   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `requests`,
+   `pandas` installed, so no `pip install` step is needed.
+2. Populate `../../credentials.yaml` (`institute_id` is loaded but unused) — shared by every
+   pipeline, likely already done. No config file, `input/` folder, or notification setup needed.
+3. `cd /home/projectdev/ela_datasets/course_batch_merge/scripts`.
+4. Run the script below. **The filename is capitalized exactly like this** —
+   `Course_Batch_Merge.py`, not `course_batch_merge.py` — Linux is case-sensitive and will error
+   with "No such file or directory" on the lowercase form.
 
 ```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/course_batch_merge/scripts
 python3 Course_Batch_Merge.py
 ```

@@ -218,12 +218,18 @@ in this pipeline.
 
 ## 12. Setup & How to Run
 
-1. Populate `../../credentials.yaml` (Stage 1 only).
-2. `pip install requests pyyaml phonenumbers pycountry`.
+**Step by step:**
+1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
+   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `requests`,
+   `pyyaml`, `phonenumbers`, `pycountry` installed, so no `pip install` step is needed.
+2. Populate `../../credentials.yaml` (Stage 1 only) — shared by every pipeline, likely already done.
 3. Drop a fresh `Student-Export*.csv` into `input/` before running Stage 2.
 4. Confirm Stage 1's config date window covers the desired range.
+5. `cd /home/projectdev/ela_datasets/country_wise_data/scripts` and run all three stages in order
+   (each depends on the previous one's output).
 
 ```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/country_wise_data/scripts
 
 # Stage 1 (must run first for ip_driven_country to populate)
