@@ -35,6 +35,7 @@ flowchart TD
 | `output/course_catalogue_data.csv` | The only file this pipeline produces. |
 | `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID` (`INSTITUTE_ID` loaded but unused). |
 | `../../common.py` | Supplies `load_credentials()` only. |
+| `../../docker/Dockerfile`, `../../docker/requirements.txt` | The repo's runtime environment — **required** to run this script (see Section 12). |
 
 ## 4. Source System
 
@@ -85,23 +86,42 @@ column Edmingle returns ends up in the output.
 
 **Output:** `course_catalogue_data.csv`, direct (non-atomic) `to_csv()`.
 
-**Confirmed state (2026-09-24):** 1,846 data rows, 168,438 bytes, modified 2026-09-24 00:21 UTC —
-a genuinely current file, not a stale artifact. `output/` contains only this CSV, no `.xlsx`.
+**Confirmed state (updated 2026-09-24, after fixing the runtime environment — see Section 12):**
+**566 data rows, 61 columns**, modified 2026-09-24 15:13 UTC. This was produced by actually
+executing the current code inside a correctly-configured environment (see below) — the first
+confirmed clean run of this script on this server. It **includes** `ingested_at` as the final
+column, resolving the discrepancy previously noted in this document.
+
+Note: `wc -l` reports 34,806 lines for this file — that is **not** the row count. Several
+catalogue fields (`overview`, `about_the_course`, `product_description`, etc.) contain embedded
+newlines inside quoted CSV values, so raw line counts wildly overcount. The verified figures above
+came from the script's own printed summary and an independent check with Python's `csv` module.
+
+**Superseded prior state:** an earlier file on this server had 1,846 rows and only 22 columns,
+with no `ingested_at` column at all. That earlier file predates this audit and was almost
+certainly produced by an older revision of this script, or a different capture of the API
+response — the current code, run correctly, returns a materially wider response (61 columns,
+including large free-text fields like `overview` and `about_the_course` that the older file did
+not have). The exact origin of that earlier file remains unconfirmed; it should no longer be
+treated as representative of current output.
 
 **Database integration:** not applicable — CSV output only.
 
-**Schema** (22 columns, verified against the live file header): `bundle_id`, `course_name`,
-`num_students`, `tutors`, `tutord_ids` (Edmingle's own "Tutord Ids" spelling, lower-cased),
-`course_ids`, `subject`, `level`, `language`, `texts`, `type`, `course_division`, `certificate`,
-`course_sponsor`, `status`, `number_of_lectures`, `duration`, `personas`, `sss_category`,
-`adhyayanam_category`, `term_of_course`, `position_in_funnel` — all Source (verbatim from
-Edmingle, only the column name is cleaned).
-
-**Confirmed discrepancy:** the current code unconditionally adds an `ingested_at` column, which
-would make 23 columns — but the live file has exactly 22, with **no** `ingested_at` column at
-all. `git log` shows only 2 commits and no uncommitted changes, so this isn't an uncommitted local
-edit either. **Requires confirmation** how this specific file was actually produced (an older
-script revision, most likely, but not confirmed).
+**Schema** (61 columns, verified against the live file header): `bundle_id`, `course_name`,
+`product_description`, `overview`, `cost`, `is_online_package`, `online_registration_allowed`,
+`free_preview_allowed`, `pretty_name`, `num_students`, `tutors`, `tutord_ids` (Edmingle's own
+"Tutord Ids" spelling, lower-cased), `course_url`, `course_list`, `course_ids`, `subject`,
+`level`, `language`, `examination`, `texts`, `type`, `course_division`, `certificate`,
+`course_sponsor`, `course_title_sanskrit`, `duration_-_old`, `live_session_schedule_text`,
+`about_the_course`, `know_more_about_the_course`, `about_this_learning_program`,
+`learning_program_value_proposi`, `how_learning_program_works`, `know_more_about_the_programs`,
+`coming_soon`, `target_audience`, `status`, `number_of_lectures`, `duration`, `personas`,
+`ongoing_webinar_note`, `eligibility`, `whats_new`, `whats_new_poster`, `meta_title`,
+`meta_description`, `meta_keywords`, `dsg_link`, `hide_in_ongoing_webinar`,
+`computer_based_assessment`, `course_ordering`, `post_enrollment_(redirect_url)`, `product_id`,
+`sss_category`, `credits`, `viniyoga`, `adhyayanam_category`, `term_of_course`,
+`position_in_funnel`, `division`, `position_in_sub-funnel_(school` — all Source (verbatim from
+Edmingle, only the column name is cleaned) — plus `ingested_at` (Derived, run timestamp).
 
 ## 9. Data Quality & Known Limitations
 
@@ -115,22 +135,24 @@ output schema, unchecked.
 - The `ORGID` header (hardcoded `"683"`) and the `org_id` query parameter (from credentials) could disagree if the real org id ever changes — unverified which one Edmingle actually honors.
 - No test/demo course filtering of any kind.
 - List-valued fields aren't flattened — unusable directly from the CSV without further parsing.
-- The live output file lacks the `ingested_at` column the current code always adds (see Section 8) — a confirmed code/output mismatch.
+- **`wc -l` is not a valid row-count method for this file** — several fields contain embedded newlines; use the script's own printed count or a CSV-aware tool.
+- The VPS's system Python lacks `pandas`; the script cannot run outside the project's Docker image (see Section 12) — this was the root cause of the earlier file's uncertain provenance.
 
-**Requires confirmation:** why the output lacks `ingested_at`; whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
+**Requires confirmation:** the exact origin of the earlier 1,846-row/22-column file; whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
 
 ## 10. Error Handling & Logging
 
 No `logging` module — all output via `print()` (status code, response keys, error text, summary).
 Only a non-200 HTTP status is guarded; any other failure (connection error, timeout, malformed
-JSON) raises unhandled with no top-level `try/except` anywhere in the file. Example real output:
+JSON) raises unhandled with no top-level `try/except` anywhere in the file. Real output from the
+2026-09-24 verified run:
 
 ```
 Status: 200
 Success! Data saved successfully.
-Total records: 1846
-Total columns: 22
-File saved at: .../output/course_catalogue_data.csv
+Total records: 566
+Total columns: 61
+File saved at: /app/course_catalogue_data/scripts/../output/course_catalogue_data.csv
 ```
 
 ## 11. Dependencies
@@ -142,17 +164,25 @@ File saved at: .../output/course_catalogue_data.csv
 | `common` (repo root) | `load_credentials()` |
 | stdlib (`os`, `sys`, `datetime`, `pathlib`) | Paths, timestamp |
 
+`pandas` is **not** installed on the VPS's system Python — see Section 12.
+
 ## 12. Setup & How to Run
 
+**The VPS's system Python does not have `pandas` installed, and neither `python3-venv` nor sudo
+is available to fix that directly.** This script must run inside the repo's own Docker image.
+
 1. Populate `../../credentials.yaml` (`institute_id` loaded but unused).
-2. `pip install requests pandas`.
+2. Build the image once (from the repo root): `docker build -t ela_datasets -f docker/Dockerfile .`
 3. No config file, `input/` folder, or notification setup needed.
 
 ```bash
-cd /home/projectdev/ela_datasets/course_catalogue_data/scripts
+docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
+# inside the container:
+cd course_catalogue_data/scripts
 python3 course_catalogue_data.py
 ```
-No CLI arguments exist.
+No CLI arguments exist. Output persists on the VPS after you exit the container, since the repo
+is volume-mounted rather than copied in at build time.
 
 ## 13. Automation / Scheduling
 
@@ -169,11 +199,11 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
+| `ModuleNotFoundError: No module named 'pandas'` | Running directly on the VPS's system Python instead of inside the Docker image | Use the `docker run` command in Section 12 |
 | "No data returned from API", exits | Non-200 status, or empty `response` list | Printed status/error body; API key |
 | Unhandled exception / traceback | Connection error, timeout, or non-JSON body — none caught | Network connectivity; the traceback's failure point |
-| Output columns differ from a prior run | Edmingle changed a catalogue field — no schema validation here | Compare "Columns saved:" against a prior header |
-| `ingested_at` missing from a file | Older script revision, or the confirmed code/output discrepancy (Section 8) | Re-run the current script and re-check the header |
-| Row count differs from expected | Edmingle's own data changed — this script filters nothing | Cross-check against `course_batch_merge.csv` or a direct call |
+| Output columns differ from a prior run | Edmingle changed a catalogue field, or an earlier run used a different script revision (see Section 8) | Compare "Columns saved:" against a prior header |
+| Row count looks huge / inconsistent with the printed summary | `wc -l` overcounts this file due to embedded newlines in text fields | Trust the script's own printed count, or use Python's `csv` module |
 
 ## 16. Maintenance Guide
 
@@ -181,7 +211,7 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 - **Fix the `ORGID` inconsistency** → change the hardcoded `"683"` to `str(ORGANIZATION_ID)`, once confirmed safe.
 - **Wire in `INSTITUTE_ID`** → replace the hardcoded `483` in `BASE_URL`.
 - **Add error handling** → wrap `fetch_courses()`'s request/JSON parsing in `try/except`, consider retry/backoff similar to `attendance.py`.
-- **Restore `ingested_at` in future output** → the current code already adds it; simply re-running produces a consistent file.
+- **Rebuilding the Docker image** → required whenever `docker/requirements.txt` or `docker/Dockerfile` changes: `docker build -t ela_datasets -f docker/Dockerfile .`
 
 ## 17. Security Considerations
 
@@ -195,6 +225,7 @@ only, no student records. No `print()` call includes credential values.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24, including the `ingested_at` column discrepancy verified
-against `git log` and the live output file. Downstream consumer and project/technical owner:
-requires confirmation.*
+*Initial documentation: 2026-09-24. Updated 2026-09-24 after fixing the missing Docker-based
+runtime environment (VPS system Python lacked `pandas`) and confirming a clean run: 566 rows, 61
+columns, `ingested_at` present. Downstream consumer and project/technical owner: requires
+confirmation.*
