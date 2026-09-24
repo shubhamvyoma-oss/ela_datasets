@@ -39,7 +39,7 @@ repo consumes them programmatically.
 |---|---|
 | `scripts/edmingle_student_course_sync.py` | Entry point — startup checks, both syncs, checkpointing, logging, email, legacy migration. |
 | `scripts/edmingle_sync_config.json` | `overlap_pages`, `students_per_page`, `max_calls_per_minute`, retry/timeout settings, output filenames. |
-| `scripts/notifications.yaml` | SMTP/recipient settings + `status_update_interval_hours`. |
+| `../notifications/ela_mis_datasets.yaml` | SMTP/recipient settings + `status_update_interval_hours` (repo-wide `notifications/` folder, not this pipeline's own `scripts/`). |
 | `output/edmingle_students.csv` | Deduplicated roster (127,211 lines incl. header, last run 2026-08-24). |
 | `output/edmingle_course_enrollments.csv` | One row per class session per eligible student (529,225 lines incl. header, last run 2026-08-28). |
 | `output/edmingle_sync_state.json` | Checkpoint: last completed student page, course-refresh progress. |
@@ -188,7 +188,7 @@ resumes automatically.
    prompt shows `(.venv)` when active; a plain `python3` after this already has `requests`,
    `pyyaml` installed, so no `pip install` step is needed.
 3. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-4. Populate this folder's `notifications.yaml` (a hard requirement here, unlike other pipelines).
+4. Populate `../notifications/ela_mis_datasets.yaml` (a hard requirement here, unlike other pipelines).
 5. Confirm `edmingle_sync_config.json` has all required keys.
 6. Ensure ≥2GB free disk before starting.
 7. `cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts` and run the command below.
@@ -243,8 +243,9 @@ terminal outputs, consumed outside this codebase.
 
 ## 18. Security Considerations
 
-The API key is only sent in headers, never logged/printed. SMTP credentials live in this folder's
-own `notifications.yaml`, not committed. Output CSVs contain student/parent PII (names, emails,
+The API key is only sent in headers, never logged/printed. SMTP credentials live in
+`../notifications/ela_mis_datasets.yaml` (repo-wide `notifications/` folder), not committed.
+Output CSVs contain student/parent PII (names, emails,
 phone numbers) — access to `output/` should be restricted; no access control exists in the script
 itself. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
 

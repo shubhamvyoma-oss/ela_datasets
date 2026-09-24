@@ -12,8 +12,9 @@ CREDENTIALS
 The Edmingle api_key/org_id/orgid/institute_id come from the shared
 ../../credentials.yaml (one Edmingle key for every pipeline under
 ela_datasets/ -- see that file's header comment), and SMTP settings come
-from this pipeline's own notifications.yaml (recipients/channels are
-per-pipeline, not shared). load_config() merges both onto the dict it
+from this pipeline's own config in the repo-wide
+../../notifications/session_wise_attendance.yaml (recipients/channels are
+per-pipeline, not shared -- only the location is centralized). load_config() merges both onto the dict it
 returns, in the exact same shape (api_key/org_id/orgid/institute_id/smtp
 keys) the 5 scripts already read -- so no other call site needs to change.
 
@@ -61,11 +62,12 @@ DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't 
 
 def load_config(script_dir: Path) -> dict:
     """Merges the shared Edmingle credentials (../../credentials.yaml) and
-    this pipeline's own notifications.yaml onto a fresh config dict -- see
-    module docstring for why there's no config.yaml read here anymore."""
+    this pipeline's own notification config (../../notifications/
+    session_wise_attendance.yaml) onto a fresh config dict -- see module
+    docstring for why there's no config.yaml read here anymore."""
     config: dict = {}
     _merge_credentials(config, script_dir)
-    _merge_notifications(config, script_dir)
+    _merge_notifications(config)
     return config
 
 
@@ -100,16 +102,18 @@ def _merge_credentials(config: dict, script_dir: Path) -> None:
         config["base_url"] = edmingle["base_url"]
 
 
-def _merge_notifications(config: dict, script_dir: Path) -> None:
-    """Merges this pipeline's notifications.yaml (email SMTP settings +
+def _merge_notifications(config: dict) -> None:
+    """Merges this pipeline's notifications config (email SMTP settings +
     recipients) onto config["smtp"], in the exact shape send_run_report()
     already expects (host/port/username/app_password/from_address/
-    use_tls/to_addresses in one flat dict). The raw notifications.yaml dict
-    (common.load_notifications() already returns {} if the file is missing,
-    matching the old "missing file = notifications disabled" behavior) is
-    also stashed on config["_notifications"] so send_run_report() can hand
-    it straight to common.send_mail() without re-reading the file."""
-    notifications = common.load_notifications(script_dir.resolve())
+    use_tls/to_addresses in one flat dict). Lives in the repo-wide
+    notifications/ folder (2026-09-25), not this pipeline's own scripts/
+    folder. The raw dict (common.load_notifications() already returns {} if
+    the file is missing, matching the old "missing file = notifications
+    disabled" behavior) is also stashed on config["_notifications"] so
+    send_run_report() can hand it straight to common.send_mail() without
+    re-reading the file."""
+    notifications = common.load_notifications("session_wise_attendance")
     config["_notifications"] = notifications
 
     email_cfg = ((notifications.get("channels") or {}).get("email")) or {}

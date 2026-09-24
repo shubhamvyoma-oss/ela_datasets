@@ -90,7 +90,9 @@ DEFAULTS = {
 
 
 def send_mail(subject: str, body: str, logger: logging.Logger) -> None:
-    notifications = common.load_notifications(SCRIPT_DIR)
+    # Notifications config lives in the repo-wide notifications/ folder
+    # (2026-09-25), not this pipeline's own scripts/ folder.
+    notifications = common.load_notifications("enrollments_reports")
     common.send_mail(notifications, subject, body, logger)
 
 

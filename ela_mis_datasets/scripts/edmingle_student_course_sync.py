@@ -92,16 +92,17 @@ def _load_credentials(base_dir: Path) -> dict[str, Any]:
 
 
 def _load_notifications_config() -> dict[str, Any]:
-    # Reads this pipeline's own notifications.yaml (same folder as the script).
-    # A missing file was always a hard failure here (previously an unhandled
-    # FileNotFoundError from open()) -- preserved explicitly, since
+    # Reads this pipeline's notifications config from the repo-wide
+    # notifications/ folder (2026-09-25), not this pipeline's own scripts/
+    # folder. A missing file was always a hard failure here (previously an
+    # unhandled FileNotFoundError from open()) -- preserved explicitly, since
     # common.load_notifications() on its own treats a missing file as
     # "notifications disabled" (returns {}), which is not this script's
     # existing behavior.
-    notifications_path = Path(__file__).with_name("notifications.yaml")
+    notifications_path = common.REPO_ROOT / "notifications" / "ela_mis_datasets.yaml"
     if not notifications_path.exists():
         raise FileNotFoundError(f"Notifications file not found: {notifications_path}")
-    return common.load_notifications(notifications_path.parent)
+    return common.load_notifications("ela_mis_datasets")
 
 
 _notifications_config = _load_notifications_config()

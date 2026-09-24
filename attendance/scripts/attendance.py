@@ -228,13 +228,14 @@ def load_config(config_path: str) -> dict:
     cfg["api"]["key"]    = edmingle_cfg.get("api_key", "")
     cfg["api"]["org_id"] = str(edmingle_cfg.get("organization_id", ""))
 
-    # ── Per-pipeline notification settings (attendance/notifications.yaml) ──
-    # Email/SMTP settings are dedicated to this pipeline (not shared) and
-    # live alongside config.yaml, no longer inside it.
-    notif_path = script_dir / "notifications.yaml"
+    # ── Per-pipeline notification settings (../notifications/attendance.yaml) ──
+    # Email/SMTP settings are dedicated to this pipeline (not shared), and
+    # live in the repo-wide notifications/ folder (2026-09-25), not this
+    # pipeline's own scripts/ folder.
+    notif_path = common.REPO_ROOT / "notifications" / "attendance.yaml"
     if not notif_path.exists():
         sys.exit(f"\nNotifications file not found: {notif_path}\n")
-    notif_cfg = common.load_notifications(script_dir)
+    notif_cfg = common.load_notifications("attendance")
     email_channel = ((notif_cfg.get("channels", {}) or {}).get("email", {})) or {}
     smtp = email_channel.get("smtp", {}) or {}
     cfg["email"]["enabled"]              = email_channel.get(

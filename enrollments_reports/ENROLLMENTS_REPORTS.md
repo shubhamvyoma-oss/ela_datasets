@@ -51,6 +51,7 @@ within this repo consumes it.
 | `output/*.checkpoint.json` / `*.chunks.json` / `.log` | Resume state, chunk plan, run log — all derived from the CSV's own path. |
 | `output/edmingle_enrollment_01012010_25082026.csv` | A 115MB/450,797-line file with **no** matching checkpoint/chunks/log companion — see Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `RollingRateLimiter`, atomic writes, `send_mail`. |
+| `../../notifications/enrollments_reports.yaml` | SMTP/recipient config (repo-wide `notifications/` folder, not this pipeline's own `scripts/`). |
 
 **Documentation/reality mismatch:** the pipeline's own prior documentation lists
 `edmingle_rate_limiter.py` as a file in `scripts/`; it doesn't exist — rate limiting is entirely
@@ -169,7 +170,7 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
    shows `(.venv)` when active; a plain `python3` after this already has `requests`, `pyyaml`
    installed, so no `pip install` step is needed.
 4. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-5. Populate `notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+5. Populate `../notifications/enrollments_reports.yaml` if email alerts are wanted (missing/disabled just logs a warning).
 6. `cd /home/projectdev/ela_datasets/enrollments_reports/scripts` and run the command below.
    **Dates are `DD-MM-YYYY`** — the one pipeline in this repo that differs from every other
    pipeline's `YYYY-MM-DD`, because it's what Edmingle's own API for this endpoint expects.
@@ -221,7 +222,8 @@ exception handling instead.
 
 ## 18. Security Considerations
 
-The API key is sent only in headers, never logged/printed. `notifications.yaml` is `chmod 600`.
+The API key is sent only in headers, never logged/printed.
+`../notifications/enrollments_reports.yaml` is `chmod 600` (the `notifications/` folder itself is `chmod 700`).
 Output CSVs contain student PII (name, email, phone, shipping details) — access to `output/`
 should be restricted; no access control exists in the script itself.
 

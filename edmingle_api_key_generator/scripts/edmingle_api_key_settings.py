@@ -4,7 +4,8 @@ Credentials come from two files, matching the ela_datasets/-wide
 convention:
 - ../credentials.yaml (shared across every pipeline) -- Edmingle tutor
   login used to generate a key.
-- ./notifications.yaml (dedicated to this pipeline) -- where the
+- ../notifications/edmingle_api_key_generator.yaml (dedicated to this
+  pipeline, in the repo-wide notifications/ folder) -- where the
   generated-key notification is delivered.
 
 Neither file is committed to version control.
@@ -20,10 +21,9 @@ sys.path.insert(0, os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "..")))
 import common
 
 CREDENTIALS_PATH = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "..", "credentials.yaml"))
-NOTIFICATIONS_PATH = os.path.join(_SCRIPT_DIR, "notifications.yaml")
 
 _edmingle = common.load_credentials(CREDENTIALS_PATH)
-_notifications = common.load_notifications(_SCRIPT_DIR)
+_notifications = common.load_notifications("edmingle_api_key_generator")
 
 _tutor_login = _edmingle.get("tutor_login", {})
 _email_channel = _notifications.get("channels", {}).get("email", {})

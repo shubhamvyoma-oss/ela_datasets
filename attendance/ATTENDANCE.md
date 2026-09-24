@@ -53,7 +53,7 @@ automatically.
 |---|---|
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
 | `scripts/config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
-| `scripts/notifications.yaml` | SMTP + recipients + alert-granularity toggles. |
+| `../notifications/attendance.yaml` | SMTP + recipients + alert-granularity toggles (repo-wide `notifications/` folder, not this pipeline's own `scripts/`). |
 | `output/` | Summaries, `staging/`, `logs/`, checkpoint, lock file. |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
 | `../../common.py` | Shared credentials/notifications loader — not used for this pipeline's own SMTP/rate-limit code. |
@@ -234,7 +234,7 @@ Docstring states: `pip install pandas requests pyyaml`.
    `requests`, `pyyaml` installed, so no `pip install` step is needed.
 2. Populate `../../credentials.yaml` (`edmingle.api_key`, `edmingle.organization_id`) — shared by
    every pipeline, so this is likely already done.
-3. Populate `notifications.yaml` if email alerts are wanted (currently placeholders).
+3. Populate `../notifications/attendance.yaml` if email alerts are wanted (currently placeholders).
 4. Check `config.yaml` flags match intent (`exclude_inactive_students` is currently `false` here).
 5. `cd /home/projectdev/ela_datasets/attendance/scripts` and run one of the commands below.
 6. **For large date ranges, run inside `tmux`/`screen`.** At the pipeline's own documented rate
@@ -295,8 +295,8 @@ during this doc's 2026-09-25 cleanup).
 
 ## 17. Security Considerations
 
-`credentials.yaml`/`notifications.yaml` hold secrets and are gitignored (`notifications.yaml`
-`chmod 600`). The API key is masked in at least one log line (not exhaustively checked elsewhere).
+`credentials.yaml`/`../notifications/attendance.yaml` hold secrets and are gitignored
+(the `notifications/` folder is `chmod 700`, each file inside it `chmod 600`). The API key is masked in at least one log line (not exhaustively checked elsewhere).
 Alert emails carry operational details only — no individual-student PII in the output CSVs.
 
 ## 18. Raw API Payload (Skeleton)
