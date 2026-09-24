@@ -49,7 +49,7 @@ intended consumers, and don't exist yet.
 | `output/logs/<stage>/<stage>_<timestamp>.log` | Per-run logs. |
 | `output/master_attendance.csv`, `resolve_class_ids_run*.log`, `build_master_attendance_run.log`, `logs/build_course_catalog_alt/` | Legacy artifacts from an earlier pipeline version — no current script produces or reads them. See Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `load_credentials`/`load_notifications`/`send_mail` (used via `pipeline_common.py`). |
-| `../../notifications/session_wise_attendance.yaml` | SMTP/recipient config (repo-wide `notifications/` folder, not this pipeline's own `scripts/`). |
+| `../notifications.yaml` | SMTP/recipient config (this pipeline's own folder). |
 
 ## 4. Source System
 
@@ -207,7 +207,7 @@ lacks it) — exact invocation environment requires confirmation.
    `requests`, `PyYAML` installed, so no separate install step is needed.
 2. Populate `../../credentials.yaml` (`api_key`, `organization_id`, `institute_id`) — shared by
    every pipeline, likely already done.
-3. Populate `../notifications/session_wise_attendance.yaml` if run-report emails are wanted (note
+3. Populate `../notifications.yaml` if run-report emails are wanted (note
    the placeholder-address issue above).
 4. `cd /home/projectdev/ela_datasets/session_wise_attendance/scripts` and run all three stages in
    order whenever upstream data changes — each stage needs the previous one's output.
@@ -269,7 +269,7 @@ this repo — the planned Stages 4/5 are the only documented intended consumers 
 ## 18. Security Considerations
 
 The API key is sent via headers/params only, never logged.
-`../notifications/session_wise_attendance.yaml` is `chmod 600` (the `notifications/` folder itself is `chmod 700`).
+`../notifications.yaml` is `chmod 600`.
 None of the three output CSVs contain individual student PII (course/batch/session-level, not
 student-level). The placeholder SMTP addresses mean no real email currently leaves this pipeline
 — an availability concern, not a data-exposure risk.

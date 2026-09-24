@@ -4,8 +4,7 @@ Credentials come from two files, matching the ela_datasets/-wide
 convention:
 - ../credentials.yaml (shared across every pipeline) -- Edmingle tutor
   login used to generate a key.
-- ../notifications/edmingle_api_key_generator.yaml (dedicated to this
-  pipeline, in the repo-wide notifications/ folder) -- where the
+- ../notifications.yaml (this pipeline's own folder) -- where the
   generated-key notification is delivered.
 
 Neither file is committed to version control.

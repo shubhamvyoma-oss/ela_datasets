@@ -162,8 +162,8 @@ def load_config(config_path: str) -> dict:
     cfg["api"]["key"]    = edmingle_cfg.get("api_key", "")
     cfg["api"]["org_id"] = str(edmingle_cfg.get("organization_id", ""))
 
-    # Per-pipeline notification config, in the repo-wide notifications/ folder.
-    notif_path = common.REPO_ROOT / "notifications" / "attendance.yaml"
+    # Per-pipeline notification config, in this pipeline's own folder.
+    notif_path = common.REPO_ROOT / "attendance" / "notifications.yaml"
     if not notif_path.exists():
         sys.exit(f"\nNotifications file not found: {notif_path}\n")
     notif_cfg = common.load_notifications("attendance")

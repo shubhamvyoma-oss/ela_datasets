@@ -6,14 +6,10 @@ that existed as 3-7 near-identical copies across pipeline folders:
 credentials loading, notification-settings loading, SMTP email sending, a
 rolling-window rate limiter, and crash-safe atomic file writes.
 
-Each pipeline still has its own notifications config (recipients/thresholds
-genuinely differ per pipeline) -- as of 2026-09-25 these live together under
-notifications/<pipeline_name>.yaml at the repo root, not scattered inside
-each pipeline's own scripts/ folder, so they're easy to find and edit in
-one place. Each pipeline's own config.yaml / *.json (pipeline-specific
-tuning, not notification-related) still lives in that pipeline's own
-folder -- only notification config moved. See NOTIFICATIONS.md at the repo
-root for a one-page index of which pipeline emails whom.
+Each pipeline keeps its own notifications.yaml (recipients/thresholds genuinely differ per
+pipeline) in that pipeline's own root folder (e.g. attendance/notifications.yaml) -- a sibling of
+its scripts/ and output/ folders, not inside scripts/ itself, and not shared with other pipelines.
+See NOTIFICATIONS.md at the repo root for a one-page index of which pipeline emails whom.
 
 Every pipeline is one directory below the repo root (e.g.
 enrollments_reports/scripts/edmingle_export.py), so `from pathlib import
@@ -57,19 +53,12 @@ def load_credentials(path: str | Path | None = None) -> dict:
 
 
 def load_notifications(pipeline_name: str) -> dict:
-    """Load notifications/<pipeline_name>.yaml from the repo root. Returns {}
-    if the file is missing, matching every pipeline's existing behavior of
-    treating a missing notifications file as "notifications disabled", not
-    an error (some callers layer their own hard-fail check on top before
-    calling this, when they want a missing file to be fatal instead).
-
-    Deliberately centralized under one notifications/ folder (2026-09-25),
-    separate from every pipeline's own scripts/ folder, so recipients/
-    messages/mailing lists across all pipelines can be found and edited in
-    one place instead of hunting through each pipeline's own directory.
-    Each pipeline still has its own file here -- recipients/thresholds
-    genuinely differ per pipeline -- only the location changed."""
-    p = REPO_ROOT / "notifications" / f"{pipeline_name}.yaml"
+    """Load <pipeline_name>/notifications.yaml from the repo root (that pipeline's own folder,
+    a sibling of its scripts/ and output/ folders). Returns {} if the file is missing, matching
+    every pipeline's existing behavior of treating a missing notifications file as "notifications
+    disabled", not an error (some callers layer their own hard-fail check on top before calling
+    this, when they want a missing file to be fatal instead)."""
+    p = REPO_ROOT / pipeline_name / "notifications.yaml"
     if not p.exists():
         return {}
     with open(p, encoding="utf-8") as f:

@@ -38,10 +38,10 @@ flowchart TD
 | Path | Purpose |
 |---|---|
 | `scripts/edmingle_generate_api_key.py` | Entry point — validates settings, logs in, extracts/validates the key, orchestrates the write then the email. |
-| `scripts/edmingle_api_key_settings.py` | Loads settings from `credentials.yaml` and `../notifications/edmingle_api_key_generator.yaml`. |
+| `scripts/edmingle_api_key_settings.py` | Loads settings from `credentials.yaml` and `../notifications.yaml`. |
 | `scripts/edmingle_credentials_writer.py` | The only code allowed to write `credentials.yaml` — targeted regex replace of the `api_key` line only. |
 | `scripts/edmingle_api_key_email.py` | Builds and sends the notification email (SMTP/STARTTLS). |
-| `../notifications/edmingle_api_key_generator.yaml` | This pipeline's SMTP/recipient config, in the repo-wide `notifications/` folder (restricted permissions, not committed). |
+| `../notifications.yaml` | This pipeline's own SMTP/recipient config (restricted permissions, not committed). |
 | `scripts/run_generate_and_email_api_key.bat` | Windows launcher for the full real run. |
 | `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py` | Offline unit tests (11 total). |
 | `output/README.md` | Placeholder — this pipeline produces no file output. |
@@ -161,8 +161,7 @@ the shared repo-root `.venv/` — either works, since both provide the same `req
 1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session.
 2. Populate `../../credentials.yaml`'s `tutor_login` block (blank username/password forces an
    interactive prompt).
-3. Populate `../notifications/edmingle_api_key_generator.yaml` with valid SMTP settings and at
-   least one recipient (repo-wide `notifications/` folder, not this pipeline's own `scripts/`).
+3. Populate `../notifications.yaml` with valid SMTP settings and at least one recipient.
 4. `cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts` and run a command below.
 
 **Or, running it standalone (e.g. on a Windows machine, via its own `requirements.txt`):**

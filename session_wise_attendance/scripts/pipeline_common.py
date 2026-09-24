@@ -74,8 +74,7 @@ def _merge_notifications(config: dict) -> None:
     recipients) onto config["smtp"], in the exact shape send_run_report()
     already expects (host/port/username/app_password/from_address/
     use_tls/to_addresses in one flat dict). Lives in the repo-wide
-    notifications/ folder (2026-09-25), not this pipeline's own scripts/
-    folder. The raw dict (common.load_notifications() already returns {} if
+    own folder (a sibling of scripts/). The raw dict (common.load_notifications() already returns {} if
     the file is missing, matching the old "missing file = notifications
     disabled" behavior) is also stashed on config["_notifications"] so
     send_run_report() can hand it straight to common.send_mail() without

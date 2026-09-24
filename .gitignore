@@ -1,10 +1,10 @@
 # Secrets -- never commit these. credentials.yaml holds the live Edmingle
-# API key + tutor login password shared by every pipeline; each file under
-# notifications/ holds an SMTP app password for that pipeline's email
-# alerts (moved out of each pipeline's own scripts/ folder on 2026-09-25).
+# API key + tutor login password shared by every pipeline; each
+# notifications.yaml holds an SMTP app password for that pipeline's email
+# alerts.
 credentials.yaml
-notifications/*.yaml
-# mirrors real recipient addresses from notifications/*.yaml
+**/notifications.yaml
+# mirrors real recipient addresses from notifications.yaml
 NOTIFICATIONS.md
 
 # Generated output -- CSVs, xlsx, logs, checkpoint/chunk/state JSON files.
