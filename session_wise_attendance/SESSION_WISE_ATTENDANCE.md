@@ -272,7 +272,66 @@ None of the three output CSVs contain individual student PII (course/batch/sessi
 student-level). The placeholder SMTP addresses mean no real email currently leaves this pipeline
 — an availability concern, not a data-exposure risk.
 
-## 19. Future Improvements
+## 19. Raw API Payload (Skeleton)
+
+**Not a captured live response** — built from the field names already confirmed in Section 8's
+schema list. Five endpoints across the 3 stages plus the standalone spot-check tool:
+
+**Course catalogue** (Stage 1, `.../courses/catalogue?institution_id=...`):
+```json
+{
+  "data": [
+    {"bundle_id": "<TO CONFIRM>", "name": "<TO CONFIRM>", "batch_id": "<TO CONFIRM>",
+     "status": "<TO CONFIRM>", "start_date": "<TO CONFIRM: epoch>", "end_date": "<TO CONFIRM: epoch>",
+     "tutor_name": "<TO CONFIRM>", "tutor_id": "<TO CONFIRM>", "batch_enrollment_count": "<TO CONFIRM>"}
+  ]
+}
+```
+
+**Batch listing** (Stage 2a, `.../short/masterbatch?status={0|3}`):
+```json
+{
+  "data": [
+    {"bundle_id": "<TO CONFIRM>", "batch_id": "<TO CONFIRM>", "status": "<TO CONFIRM>"}
+  ]
+}
+```
+
+**Batch → class_id** (Stage 2b, `.../masterbatch/{batch_id}`):
+```json
+{
+  "_comment": "TO CONFIRM: the top-level class_id field is misleading per Section 8's 'response-shape correction' note -- the real class_id may live elsewhere in this response",
+  "class_id": "<TO CONFIRM: unreliable, see comment above>",
+  "tutor_name": "<TO CONFIRM>", "tutor_id": "<TO CONFIRM>",
+  "total_classes": "<TO CONFIRM>", "completed_classes": "<TO CONFIRM>", "cancelled_classes": "<TO CONFIRM>",
+  "num_users": "<TO CONFIRM: enrollment count, NOT attendance -- see Section 14>"
+}
+```
+
+**Session attendance** (Stage 3, `.../organization/attendances`):
+```json
+{
+  "data": [
+    {"session_id": "<TO CONFIRM>", "class_id": "<TO CONFIRM>",
+     "start": "<TO CONFIRM: unix>", "end": "<TO CONFIRM: unix>",
+     "present": "<TO CONFIRM>", "not_marked": "<TO CONFIRM>",
+     "taken_by_name": "<TO CONFIRM>", "individual_batch_attendance": "<TO CONFIRM>",
+     "signin_by_name": "<TO CONFIRM: fetched but deliberately not written to output>",
+     "class_status_code": "<TO CONFIRM: fetched but deliberately not written to output>"}
+  ]
+}
+```
+
+**Attendance detail** (standalone spot-check, `.../bundle/general/attendancedet`):
+```json
+{
+  "data": [
+    {"class_id": "<TO CONFIRM>", "class_date": "<TO CONFIRM>", "present": "<TO CONFIRM>"}
+  ]
+}
+```
+
+## 20. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

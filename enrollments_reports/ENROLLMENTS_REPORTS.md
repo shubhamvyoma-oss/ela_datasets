@@ -225,7 +225,43 @@ The API key is sent only in headers, never logged/printed. `notifications.yaml` 
 Output CSVs contain student PII (name, email, phone, shipping details) — access to `output/`
 should be restricted; no access control exists in the script itself.
 
-## 19. Future Improvements
+## 19. Raw API Payload (Skeleton)
+
+**Not a captured live response** — built from the field names already confirmed in Section 8's
+schema list.
+
+```json
+{
+  "page_context": {
+    "has_more_page": "<TO CONFIRM: boolean>",
+    "page": "<TO CONFIRM>",
+    "per_page": 200
+  },
+  "data": [
+    {
+      "enrollment_id": "<TO CONFIRM>",
+      "enrollment_day": "<TO CONFIRM>",
+      "user_id": "<TO CONFIRM>",
+      "name": "<TO CONFIRM>",
+      "email": "<TO CONFIRM>",
+      "contact_number": "<TO CONFIRM>",
+      "state": "<TO CONFIRM>",
+      "registration_number": "<TO CONFIRM>",
+      "learner_type": "<TO CONFIRM>",
+      "enrollment_mode": "<TO CONFIRM>",
+      "enrollment_status": "<TO CONFIRM>",
+      "bundle_id": "<TO CONFIRM>",
+      "bundle_name": "<TO CONFIRM>",
+      "batch_ids": "<TO CONFIRM>",
+      "product_type": "<TO CONFIRM>",
+      "platform_type": "<TO CONFIRM>",
+      "enrollment_expiration_date": "<TO CONFIRM>"
+    }
+  ]
+}
+```
+
+## 20. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

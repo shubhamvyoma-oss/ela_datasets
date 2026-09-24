@@ -54,7 +54,6 @@ automatically.
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
 | `scripts/config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
 | `scripts/notifications.yaml` | SMTP + recipients + alert-granularity toggles. |
-| `scripts/run_pipeline.bat` | Windows auto-restart wrapper. **Stale** — see Known Limitations. |
 | `output/` | Summaries, `staging/`, `logs/`, checkpoint, lock file. |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
 | `../../common.py` | Shared credentials/notifications loader — not used for this pipeline's own SMTP/rate-limit code. |
@@ -198,7 +197,6 @@ validation.
 - No schema validation beyond the fields the code reads directly.
 - `total_classes_remaining` is effectively always 0 — `report_type=55` only reports past sessions.
 - No range/outlier checks (e.g. `attendance_percentage` > 100 wouldn't be caught).
-- `run_pipeline.bat` is stale: wrong script name, a Windows path from another machine, a hardcoded 2018–2026 range. Needs rewriting before use.
 - `--config` default resolves against the caller's cwd, not the script folder — fails if run from elsewhere without an explicit path.
 - `notifications.yaml` still has placeholder SMTP credentials/recipients with alerts enabled — no real email will arrive until filled in.
 - The one file in `output/` has no supporting staging/log/checkpoint trail — provenance unconfirmed.
@@ -259,8 +257,10 @@ python3 attendance.py --reset-checkpoint
 
 ## 13. Automation / Scheduling
 
-None — triggered manually. `run_pipeline.bat` was meant for Task Scheduler auto-recovery but is
-stale (see Known Limitations) and needs rewriting first.
+None — triggered manually. If unattended auto-restart is ever wanted, a Linux-native wrapper
+(e.g. a small shell script + `systemd`/`cron` retry) would need to be written; no such wrapper
+exists today (a stale Windows `.bat` version from a different machine was removed as dead weight
+during this doc's 2026-09-25 cleanup).
 
 ## 14. Important Business / Technical Rules
 
@@ -292,7 +292,6 @@ stale (see Known Limitations) and needs rewriting first.
 - **Output schema change** → `OUTPUT_COLUMNS`/`SESSION_OUTPUT_COLUMNS` plus the summary-building functions.
 - **Retry/backoff tuning** → `config.yaml api.*`, no code change needed.
 - **New notification channel** → `notifications.yaml` has Slack/Teams placeholders, but `EmailNotifier` needs new send logic.
-- **Fixing `run_pipeline.bat`** → rewrite paths/filename, or replace with a Linux-native wrapper.
 
 ## 17. Security Considerations
 
@@ -300,7 +299,41 @@ stale (see Known Limitations) and needs rewriting first.
 `chmod 600`). The API key is masked in at least one log line (not exhaustively checked elsewhere).
 Alert emails carry operational details only — no individual-student PII in the output CSVs.
 
-## 18. Future Improvements
+## 18. Raw API Payload (Skeleton)
+
+**Not a captured live response** — Edmingle credentials/session weren't used to make a fresh call
+for this document. This is a skeleton built from the raw field names already confirmed elsewhere
+in this doc (Sections 4, 6, 9, 14 — `attendance_id`, `class_Id`, `studentRating`,
+`studentBatchStatus`, etc. are exact field names the code reads, not guesses). The response
+envelope (top-level wrapper key, pagination fields) is **unconfirmed** — replace this whole block
+with a real captured response the next time the pipeline runs.
+
+```json
+{
+  "_comment": "TO CONFIRM: real top-level wrapper key/shape — this is a placeholder guess",
+  "data": [
+    {
+      "batch_Id": "<TO CONFIRM>",
+      "batchName": "<TO CONFIRM>",
+      "bundle_Id": "<TO CONFIRM>",
+      "bundleName": "<TO CONFIRM>",
+      "course_Id": "<TO CONFIRM>",
+      "courseName": "<TO CONFIRM>",
+      "teacher_Id": "<TO CONFIRM>",
+      "teacherName": "<TO CONFIRM>",
+      "student_Id": "<TO CONFIRM>",
+      "attendance_id": "<TO CONFIRM: preferred session-id field>",
+      "class_Id": "<TO CONFIRM: subject/stream id, NOT a session id -- do not use as session_id_column>",
+      "classDate": "<TO CONFIRM: format matches config.yaml pipeline.date_format, e.g. '03 Jan 2026'>",
+      "studentBatchStatus": "<TO CONFIRM: e.g. 'Active' / 'Archived' / 'Cancelled'>",
+      "studentRating": "<TO CONFIRM: 0 means 'not rated', not a real zero>",
+      "markStatus": "<TO CONFIRM: maps to pipeline.present_value / absent_value / late_value>"
+    }
+  ]
+}
+```
+
+## 19. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

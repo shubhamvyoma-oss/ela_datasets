@@ -281,7 +281,40 @@ export into `input/` before each run.
 contacts, addresses) — gitignored, share only through a PII-appropriate channel. Stage 1's
 credentials are never printed in logs. No email/alerting exists, so no SMTP secret exposure here.
 
-## 18. Future Improvements
+## 18. Raw API Payload (Skeleton)
+
+Only **Stage 1** calls a live API (`.../user/useranalyticslist`) — Stages 2/3 are pure file-to-file
+merges with no payload to document. **Not a captured live response** — this skeleton is built
+from the field names already confirmed in Section 8's schema list, not a fresh call.
+
+```json
+{
+  "page_context": {
+    "has_more_page": "<TO CONFIRM: boolean>",
+    "page": "<TO CONFIRM>",
+    "per_page": 500
+  },
+  "data": [
+    {
+      "user_id": "<TO CONFIRM>",
+      "name": "<TO CONFIRM>",
+      "email": "<TO CONFIRM>",
+      "contact_number": "<TO CONFIRM>",
+      "geoLocationInfo": {
+        "country": "<TO CONFIRM: this is the filter_key path, geoLocationInfo.country>",
+        "region": "<TO CONFIRM>"
+      },
+      "time_spent_seconds": "<TO CONFIRM>",
+      "total_sessions": "<TO CONFIRM>",
+      "last_seen_epoch": "<TO CONFIRM: unix epoch>",
+      "created_at_epoch": "<TO CONFIRM: unix epoch>",
+      "source_page": "<TO CONFIRM>"
+    }
+  ]
+}
+```
+
+## 19. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

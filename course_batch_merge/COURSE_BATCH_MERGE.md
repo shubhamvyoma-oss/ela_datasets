@@ -232,7 +232,52 @@ None — triggered manually, no cron/systemd/Task Scheduler entry, and no restar
 `credentials.yaml` holds the shared API key and is gitignored. No PII beyond tutor names — no
 individual student records. `log_progress()` never prints credential values.
 
-## 18. Future Improvements
+## 18. Raw API Payload (Skeleton)
+
+**Not a captured live response** — built from the field names already confirmed in Section 8's
+schema table, not a fresh call. Two endpoints, two shapes:
+
+**Catalogue** (`.../institute/483/courses/catalogue`):
+```json
+{
+  "_comment": "TO CONFIRM: real top-level wrapper key/shape",
+  "data": [
+    {
+      "Course_Ids": "<TO CONFIRM>",
+      "Course Name": "<TO CONFIRM>",
+      "Tutors": "<TO CONFIRM>",
+      "Tutord Ids": "<TO CONFIRM: Edmingle's own spelling, not a typo>",
+      "Subject": "<TO CONFIRM>",
+      "Level": "<TO CONFIRM>",
+      "Language": "<TO CONFIRM>",
+      "Status": "<TO CONFIRM>",
+      "Duration": "<TO CONFIRM>"
+    }
+  ]
+}
+```
+
+**Masterbatch** (`.../short/masterbatch?status={0/1/3}&page=1&per_page=1000`):
+```json
+{
+  "_comment": "TO CONFIRM: real pagination field names -- page=1 never advances in code, unconfirmed if that's a bug or a documented API limit",
+  "data": [
+    {
+      "bundle_id": "<TO CONFIRM>",
+      "bundle_name": "<TO CONFIRM>",
+      "batch_id": "<TO CONFIRM>",
+      "batch_name": "<TO CONFIRM>",
+      "start_date": "<TO CONFIRM: epoch>",
+      "end_date": "<TO CONFIRM: epoch>",
+      "tutor_name": "<TO CONFIRM>",
+      "tutor_id": "<TO CONFIRM>",
+      "admitted_students": "<TO CONFIRM: becomes batch_enrollment_count>"
+    }
+  ]
+}
+```
+
+## 19. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

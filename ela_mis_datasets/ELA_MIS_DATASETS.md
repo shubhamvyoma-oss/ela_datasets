@@ -248,7 +248,62 @@ own `notifications.yaml`, not committed. Output CSVs contain student/parent PII 
 phone numbers) — access to `output/` should be restricted; no access control exists in the script
 itself. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
 
-## 19. Future Improvements
+## 19. Raw API Payload (Skeleton)
+
+**Not a captured live response** — built from the field names already confirmed in Section 8's
+schema list. Two endpoints, two shapes:
+
+**Student roster** (`.../organization/students`):
+```json
+{
+  "_comment": "TO CONFIRM: real top-level wrapper key/shape; empty list signals end of pagination per Section 4",
+  "data": [
+    {
+      "user_id": "<TO CONFIRM>",
+      "name": "<TO CONFIRM>",
+      "email": "<TO CONFIRM>",
+      "user_username": "<TO CONFIRM>",
+      "contact_number": "<TO CONFIRM>",
+      "parent_contact_number": "<TO CONFIRM>",
+      "parent_email": "<TO CONFIRM>",
+      "parent_name": "<TO CONFIRM>",
+      "registration_number": "<TO CONFIRM>",
+      "role": "<TO CONFIRM>",
+      "status": "<TO CONFIRM>",
+      "is_archived": "<TO CONFIRM: 0/1>",
+      "date": "<TO CONFIRM: unix timestamp, passed through unconverted>",
+      "customfield_data": ["<TO CONFIRM: matched by name to derive PhoneNumber/Age/LastName -- see Section 14>"]
+    }
+  ]
+}
+```
+
+**Course/attendance** (`.../admin/classes/attendance`, one call per student via `user_id`):
+```json
+{
+  "_comment": "TO CONFIRM: real top-level wrapper key/shape",
+  "data": [
+    {
+      "class_id": "<TO CONFIRM>",
+      "class_name": "<TO CONFIRM>",
+      "tutor_name": "<TO CONFIRM>",
+      "total_classes": "<TO CONFIRM>",
+      "present": "<TO CONFIRM>",
+      "absent": "<TO CONFIRM>",
+      "late": "<TO CONFIRM>",
+      "excused": "<TO CONFIRM>",
+      "start_date": "<TO CONFIRM: unix timestamp>",
+      "end_date": "<TO CONFIRM: unix timestamp>",
+      "master_batch_id": "<TO CONFIRM>",
+      "master_batch_name": "<TO CONFIRM>",
+      "batch_status": "<TO CONFIRM>",
+      "bundle_id": "<TO CONFIRM>"
+    }
+  ]
+}
+```
+
+## 20. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.

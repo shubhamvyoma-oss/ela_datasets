@@ -226,7 +226,31 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 `credentials.yaml` holds the shared API key and is gitignored. No PII — catalogue-level data
 only, no student records. No `print()` call includes credential values.
 
-## 18. Future Improvements
+## 18. Raw API Payload (Skeleton)
+
+**Genuinely incomplete, not just unconfirmed values** — unlike this repo's other pipelines, this
+one applies **no field-level filtering** (Section 8): every column Edmingle's response happens to
+contain becomes an output column, and the current confirmed output is 61 columns wide. Only a
+handful of those field names are individually known from this document (`overview`,
+`about_the_course`, `product_description`); the rest are unenumerated. This skeleton shows only
+the known fields — replace the whole block with a real captured response to get the true shape.
+
+```json
+{
+  "_comment": "TO CONFIRM: real top-level wrapper key/shape, and the ~55 other columns not individually documented",
+  "data": [
+    {
+      "course_id": "<TO CONFIRM>",
+      "course_name": "<TO CONFIRM>",
+      "overview": "<TO CONFIRM: free text, contains embedded newlines -- see Section 8's wc -l warning>",
+      "about_the_course": "<TO CONFIRM: free text, contains embedded newlines>",
+      "product_description": "<TO CONFIRM: free text>"
+    }
+  ]
+}
+```
+
+## 19. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.
