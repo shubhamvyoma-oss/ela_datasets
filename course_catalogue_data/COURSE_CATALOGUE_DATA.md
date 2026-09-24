@@ -35,7 +35,7 @@ flowchart TD
 | `output/course_catalogue_data.csv` | The only file this pipeline produces. |
 | `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID` (`INSTITUTE_ID` loaded but unused). |
 | `../../common.py` | Supplies `load_credentials()` only. |
-| `../../docker/Dockerfile`, `../../docker/requirements.txt` | The repo's runtime environment — **required** to run this script (see Section 12). |
+| `../../.venv/` (venv, primary), `../../docker/Dockerfile`/`../../docker/requirements.txt` (Docker, alternative) | The repo's runtime environment — **required** to run this script (see Section 12). |
 
 ## 4. Source System
 
@@ -136,7 +136,7 @@ output schema, unchecked.
 - No test/demo course filtering of any kind.
 - List-valued fields aren't flattened — unusable directly from the CSV without further parsing.
 - **`wc -l` is not a valid row-count method for this file** — several fields contain embedded newlines; use the script's own printed count or a CSV-aware tool.
-- The VPS's system Python lacks `pandas`; the script cannot run outside the project's Docker image (see Section 12) — this was the root cause of the earlier file's uncertain provenance.
+- The VPS's system Python lacks `pandas`; the script needs the project's `.venv` (or the Docker image) to run (see Section 12) — this was the root cause of the earlier file's uncertain provenance.
 
 **Requires confirmation:** the exact origin of the earlier 1,846-row/22-column file; whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
 
@@ -169,20 +169,28 @@ File saved at: /app/course_catalogue_data/scripts/../output/course_catalogue_dat
 ## 12. Setup & How to Run
 
 **The VPS's system Python does not have `pandas` installed, and neither `python3-venv` nor sudo
-is available to fix that directly.** This script must run inside the repo's own Docker image.
+is available to fix that directly.** A working virtual environment already exists at
+`/home/projectdev/ela_datasets/.venv` (see the repo-root `RUN_GUIDE.md` for how it was built and
+how to recreate it if it's ever lost) — activate it once per shell session, then run the script
+exactly as before:
 
-1. Populate `../../credentials.yaml` (`institute_id` loaded but unused).
-2. Build the image once (from the repo root): `docker build -t ela_datasets -f docker/Dockerfile .`
-3. No config file, `input/` folder, or notification setup needed.
+```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
+cd course_catalogue_data/scripts
+python3 course_catalogue_data.py
+```
+No CLI arguments exist. Populate `../../credentials.yaml` beforehand (`institute_id` loaded but
+unused); no config file, `input/` folder, or notification setup needed.
 
+**Alternative: Docker**, if you'd rather run fully isolated from the VPS's own Python:
 ```bash
 docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
 # inside the container:
 cd course_catalogue_data/scripts
 python3 course_catalogue_data.py
 ```
-No CLI arguments exist. Output persists on the VPS after you exit the container, since the repo
-is volume-mounted rather than copied in at build time.
+Output persists on the VPS after you exit the container, since the repo is volume-mounted rather
+than copied in at build time.
 
 ## 13. Automation / Scheduling
 
@@ -199,7 +207,7 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| `ModuleNotFoundError: No module named 'pandas'` | Running directly on the VPS's system Python instead of inside the Docker image | Use the `docker run` command in Section 12 |
+| `ModuleNotFoundError: No module named 'pandas'` | Running on the VPS's system Python directly, without activating `.venv` first (or outside the Docker image) | `source ../../.venv/bin/activate` first, or use the `docker run` command — see Section 12 |
 | "No data returned from API", exits | Non-200 status, or empty `response` list | Printed status/error body; API key |
 | Unhandled exception / traceback | Connection error, timeout, or non-JSON body — none caught | Network connectivity; the traceback's failure point |
 | Output columns differ from a prior run | Edmingle changed a catalogue field, or an earlier run used a different script revision (see Section 8) | Compare "Columns saved:" against a prior header |
@@ -211,7 +219,7 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 - **Fix the `ORGID` inconsistency** → change the hardcoded `"683"` to `str(ORGANIZATION_ID)`, once confirmed safe.
 - **Wire in `INSTITUTE_ID`** → replace the hardcoded `483` in `BASE_URL`.
 - **Add error handling** → wrap `fetch_courses()`'s request/JSON parsing in `try/except`, consider retry/backoff similar to `attendance.py`.
-- **Rebuilding the Docker image** → required whenever `docker/requirements.txt` or `docker/Dockerfile` changes: `docker build -t ela_datasets -f docker/Dockerfile .`
+- **Adding a new dependency** → `.venv/bin/pip install <package>` (venv) and add it to `docker/requirements.txt` (rebuild the image with `docker build -t ela_datasets -f docker/Dockerfile .` if Docker is used too), so both runtimes stay in sync.
 
 ## 17. Security Considerations
 
@@ -225,7 +233,8 @@ only, no student records. No `print()` call includes credential values.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24. Updated 2026-09-24 after fixing the missing Docker-based
-runtime environment (VPS system Python lacked `pandas`) and confirming a clean run: 566 rows, 61
-columns, `ingested_at` present. Downstream consumer and project/technical owner: requires
-confirmation.*
+*Initial documentation: 2026-09-24. Updated 2026-09-24 after fixing the missing runtime
+environment (VPS system Python lacked `pandas`) — first via Docker, then via a `.venv` created
+with `virtualenv.pyz` for native (non-Docker) runs — and confirming a clean run via both: 566
+rows, 61 columns, `ingested_at` present. Downstream consumer and project/technical owner:
+requires confirmation.*

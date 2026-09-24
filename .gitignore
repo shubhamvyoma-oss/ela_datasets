@@ -30,3 +30,6 @@ experiments/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Local virtual environment (created via virtualenv.pyz -- see RUN_GUIDE.md)
+.venv/

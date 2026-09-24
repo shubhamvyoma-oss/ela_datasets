@@ -7,22 +7,37 @@ run it*.
 ## Runtime environment — read this first
 
 The VPS's system Python does **not** have `pandas`/`phonenumbers`/`pycountry` installed, and
-neither `python3-venv` nor sudo is available on this server to fix that directly. All scripts
-that need those packages must run inside the project's own Docker image (`docker/Dockerfile`).
+neither `python3-venv` nor sudo is available on this server to fix that the normal way.
 
-**Build the image once** (rebuild only if `docker/requirements.txt` or the Dockerfile changes):
+**A working virtual environment already exists at `/home/projectdev/ela_datasets/.venv`**
+(created with the `virtualenv.pyz` zipapp, which doesn't need `python3-venv` or sudo — see
+"Recreating the environment" below if it's ever lost). Activate it once per shell session, then
+every command below works exactly as written, with plain `python3`:
+
+```bash
+source /home/projectdev/ela_datasets/.venv/bin/activate
+```
+
+You'll know it's active because your prompt gets a `(.venv)` prefix. Deactivate with `deactivate`.
+
+**Alternative: Docker.** The repo also has its own `docker/Dockerfile` if you'd rather run
+fully isolated from the VPS's own Python entirely:
 ```bash
 cd /home/projectdev/ela_datasets
-docker build -t ela_datasets -f docker/Dockerfile .
-```
-
-**Enter the container** (mounts the whole repo at `/app`, so file changes/output persist on the
-VPS after you exit):
-```bash
+docker build -t ela_datasets -f docker/Dockerfile .        # once, or after requirements.txt changes
 docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
 ```
-Once inside, every command below is identical to running Python natively — `cd` to the pipeline's
-`scripts/` folder and run it. Type `exit` to leave the container.
+Both approaches install the same packages; use whichever you prefer. The rest of this guide
+assumes the venv is activated.
+
+**Recreating the environment**, if `.venv/` is ever deleted or corrupted:
+```bash
+cd /home/projectdev/ela_datasets
+curl -sL https://bootstrap.pypa.io/virtualenv.pyz -o /tmp/virtualenv.pyz
+python3 /tmp/virtualenv.pyz .venv
+source .venv/bin/activate
+pip install pandas requests pyyaml phonenumbers pycountry
+```
 
 General prerequisites for all pipelines: shared `credentials.yaml` at the repo root must have a
 valid `edmingle.api_key`/`organization_id` (rotate via Section 5 below if expired).
@@ -33,9 +48,8 @@ valid `edmingle.api_key`/`organization_id` (rotate via Section 5 below if expire
 
 **Status: blocked — has never produced output. Confirm with the project owner before relying on it.**
 
-Inside the container:
 ```bash
-cd attendance/scripts
+cd /home/projectdev/ela_datasets/attendance/scripts
 python3 attendance.py --from <YYYY-MM-DD> --to <YYYY-MM-DD>
 ```
 - `--from`/`--to`: date range. Omit both to use the configured default lookback.
@@ -48,23 +62,21 @@ python3 attendance.py --from <YYYY-MM-DD> --to <YYYY-MM-DD>
 
 Run all three stages in order — Stage 3 needs both prior outputs.
 
-Inside the container:
 ```bash
-cd country_wise_data/scripts
+cd /home/projectdev/ela_datasets/country_wise_data/scripts
 python3 ip_driven_country_data.py --config ip_driven_country_data_config.json   # Stage 1
 python3 dial_code_to_country.py                                                # Stage 2
 python3 merge_country_data.py                                                  # Stage 3
 ```
-- Stage 2 needs a fresh `Student-Export*.csv` dropped into `../input/` beforehand (manual Edmingle admin-panel export) — do this on the VPS before entering the container.
+- Stage 2 needs a fresh `Student-Export*.csv` dropped into `../input/` beforehand (manual Edmingle admin-panel export).
 - **Check after running:** `../output/merged_country_data.csv` row count matches `../input/Student-Export.csv`'s row count.
 
 ---
 
 ## 3. Course_Batch_Merge
 
-Inside the container:
 ```bash
-cd course_batch_merge/scripts
+cd /home/projectdev/ela_datasets/course_batch_merge/scripts
 python3 Course_Batch_Merge.py
 ```
 - No arguments. Takes well under a minute.
@@ -74,9 +86,8 @@ python3 Course_Batch_Merge.py
 
 ## 4. Course_Catalogue_Data
 
-Inside the container:
 ```bash
-cd course_catalogue_data/scripts
+cd /home/projectdev/ela_datasets/course_catalogue_data/scripts
 python3 course_catalogue_data.py
 ```
 - No arguments.
@@ -86,13 +97,10 @@ python3 course_catalogue_data.py
 
 ## 5. Edmingle_API_Key_Generator (utility — rotates the shared API key)
 
-**Never run automatically or on a schedule.** Run only when a real key rotation is intended. This
-one may prompt interactively (tutor login / email password) — make sure you used `-it` when
-entering the container.
+**Never run automatically or on a schedule.** Run only when a real key rotation is intended.
 
-Inside the container:
 ```bash
-cd edmingle_api_key_generator/scripts
+cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts
 python3 edmingle_generate_api_key.py --check-config   # validate config only, no live call
 python3 edmingle_generate_api_key.py                  # full run: rotates the live key + emails it
 ```
@@ -102,17 +110,16 @@ python3 edmingle_generate_api_key.py                  # full run: rotates the li
 
 ## 6. ELA_MIS_Datasets
 
-**Run inside `tmux` — a full run takes 68–80 hours.** Start `tmux` on the VPS *before* entering
-the container, so the container keeps running even if your SSH session drops.
+**Run inside `tmux` — a full run takes 68–80 hours.**
 
 ```bash
 tmux new -s vyoma
-docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
-cd ela_mis_datasets/scripts
+source /home/projectdev/ela_datasets/.venv/bin/activate
+cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts
 python3 edmingle_student_course_sync.py
-# detach from tmux: Ctrl+B then D — reattach later with: tmux attach -t vyoma
+# detach: Ctrl+B then D — reattach later with: tmux attach -t vyoma
 ```
-- Resumable — if it crashes or the session is lost, re-enter the container and re-run the same command; it picks up from checkpoint.
+- Resumable — if it crashes or the session is lost, just re-run the same command; it picks up from checkpoint.
 - **Check after running:** `../output/edmingle_sync.log` ends with `Edmingle sync run completed`; no `SCRIPT_FAILED.txt` in `../output/`.
 
 ---
@@ -122,9 +129,9 @@ python3 edmingle_student_course_sync.py
 **Status: currently blocked by a permanent API error, and has a known code defect (`send_mail` call bug) that will crash the next run's emails. Fix both before relying on this.**
 
 ```bash
-tmux new -s enrollments   # recommended for long ranges, start before entering the container
-docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
-cd enrollments_reports/scripts
+tmux new -s enrollments   # recommended for long ranges
+source /home/projectdev/ela_datasets/.venv/bin/activate
+cd /home/projectdev/ela_datasets/enrollments_reports/scripts
 python3 edmingle_export.py --start-date <DD-MM-YYYY> --end-date <DD-MM-YYYY>
 ```
 - Dates are `DD-MM-YYYY` (not `YYYY-MM-DD` — different from every other pipeline).
@@ -137,9 +144,8 @@ python3 edmingle_export.py --start-date <DD-MM-YYYY> --end-date <DD-MM-YYYY>
 
 Run all three stages in order — each needs the previous stage's output.
 
-Inside the container:
 ```bash
-cd session_wise_attendance/scripts
+cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
 python3 build_course_catalog.py                                   # Stage 1
 python3 resolve_class_ids.py                                      # Stage 2
 python3 build_session_attendance.py --start <YYYY-MM-DD> --end <YYYY-MM-DD>   # Stage 3
@@ -151,9 +157,8 @@ python3 build_session_attendance.py --start <YYYY-MM-DD> --end <YYYY-MM-DD>   # 
 
 ## Standalone spot-check tool (not part of the ordered run)
 
-Inside the container:
 ```bash
-cd session_wise_attendance/scripts
+cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
 python3 attendance_crossvalidation.py --class_id <id> --start <YYYY-MM-DD> --end <YYYY-MM-DD>
 ```
 Compares one class_id's attendance against a second Edmingle endpoint as a manual sanity check.
