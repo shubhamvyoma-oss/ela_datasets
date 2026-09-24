@@ -389,3 +389,9 @@ Per the project's own README, Stages 4 (join `session_wise_attendance_data.csv` 
 
 - **Project Owner:** Requires confirmation from the project owner.
 - **Technical Owner:** Requires confirmation from the project owner.
+
+## 28. Future Improvements
+
+1. **Email notification on completion** — send an email when the script run finishes (success or failure), so a human does not need to check logs/output manually to know the pipeline ran.
+2. **Scheduled automation** — run the script automatically on a defined schedule (e.g. daily/weekly on a particular date) instead of requiring a manual trigger.
+3. **Data cleaning layer** — add a dedicated data-cleaning step/script (null handling, duplicate removal, type/standardization checks) as part of the pipeline, rather than relying on downstream consumers to clean the raw output.
