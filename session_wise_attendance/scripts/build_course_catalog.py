@@ -42,13 +42,17 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
-import requests
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
-    load_config, parse_retry_after_seconds, resolve_output_folder,
-    RateLimiter, PipelineRunLogger, send_run_report,
+    PipelineRunLogger,
+    RateLimiter,
+    load_config,
+    parse_retry_after_seconds,
+    resolve_output_folder,
+    send_run_report,
 )
 
 STAGE_NAME = "build_course_catalog"

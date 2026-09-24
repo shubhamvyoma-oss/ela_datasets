@@ -25,7 +25,7 @@ def update_shared_api_key(credentials_path: str, new_api_key: str) -> None:
         raise CredentialsUpdateError("refusing to write an empty/whitespace api key")
 
     try:
-        with open(credentials_path, "r", encoding="utf-8") as f:
+        with open(credentials_path, encoding="utf-8") as f:
             content = f.read()
     except OSError as error:
         raise CredentialsUpdateError(

@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import edmingle_api_key_email as emailmod
@@ -93,7 +93,7 @@ class ApiKeyGeneratorTests(unittest.TestCase):
         subject, body = emailmod.build_api_key_email(
             "b" * 32,
             "ELATEAM",
-            datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 25, 10, 0, tzinfo=UTC),
         )
         self.assertIn("New API Key", subject)
         self.assertIn("b" * 32, body)

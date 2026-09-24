@@ -29,7 +29,7 @@ USAGE
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Shared bytecode cache for every ela_datasets/ pipeline -- must be set
@@ -49,9 +49,13 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from attendance_crossvalidation import fetch_org_attendances, sessions_to_dataframe, SESSION_BASE_COLUMNS
+from attendance_crossvalidation import SESSION_BASE_COLUMNS, fetch_org_attendances, sessions_to_dataframe
 from pipeline_common import (
-    load_config, resolve_output_folder, RateLimiter, PipelineRunLogger, send_run_report,
+    PipelineRunLogger,
+    RateLimiter,
+    load_config,
+    resolve_output_folder,
+    send_run_report,
 )
 
 STAGE_NAME = "build_session_attendance"
@@ -71,7 +75,7 @@ def to_unix(date_str: str) -> int:
     """Parse YYYY-MM-DD as IST midnight -> unix timestamp."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     ist_offset_seconds = 5.5 * 3600
-    utc_dt = dt.replace(tzinfo=timezone.utc)
+    utc_dt = dt.replace(tzinfo=UTC)
     return int(utc_dt.timestamp() - ist_offset_seconds)
 
 

@@ -35,10 +35,9 @@ drift on session-shaping/status-classification logic.
 
 import argparse
 import os
-import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Shared bytecode cache for every ela_datasets/ pipeline -- must be set
@@ -60,8 +59,11 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
-    load_config, parse_retry_after_seconds, resolve_output_folder,
-    PipelineRunLogger, send_run_report,
+    PipelineRunLogger,
+    load_config,
+    parse_retry_after_seconds,
+    resolve_output_folder,
+    send_run_report,
 )
 
 STAGE_NAME = "attendance_crossvalidation"
@@ -76,7 +78,7 @@ def to_unix(date_str: str) -> int:
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     # IST is UTC+5:30; treat input date as IST midnight
     ist_offset_seconds = 5.5 * 3600
-    utc_dt = dt.replace(tzinfo=timezone.utc)
+    utc_dt = dt.replace(tzinfo=UTC)
     return int(utc_dt.timestamp() - ist_offset_seconds)
 
 
@@ -195,7 +197,7 @@ def unix_to_ist(ts, fmt: str = "%Y-%m-%d %H:%M:%S"):
     elsewhere in the pipeline for report_type=55."""
     if ts is None:
         return None
-    dt = datetime.fromtimestamp(ts + IST_OFFSET_SECONDS, tz=timezone.utc)
+    dt = datetime.fromtimestamp(ts + IST_OFFSET_SECONDS, tz=UTC)
     return dt.strftime(fmt)
 
 
@@ -381,7 +383,7 @@ def main():
         n_planned = len(df)
         n_conducted = int(df["session_conducted"].sum())
         n_not_conducted = n_planned - n_conducted
-        print(f"\n[PLANNED VS CONDUCTED — from /organization/attendances session statuses]")
+        print("\n[PLANNED VS CONDUCTED — from /organization/attendances session statuses]")
         print(f"  Planned (all scheduled slots returned): {n_planned}")
         print(f"  Conducted (status not Postponed/Cancelled): {n_conducted}")
         print(f"  Not conducted (Postponed/Cancelled): {n_not_conducted}")
@@ -392,7 +394,7 @@ def main():
             if summary_det:
                 scheduled = summary_det.get("sessions_scheduled")
                 cancelled = summary_det.get("sessions_cancelled")
-                print(f"\n[PLANNED VS CONDUCTED — from /bundle/general/attendancedet aggregate]")
+                print("\n[PLANNED VS CONDUCTED — from /bundle/general/attendancedet aggregate]")
                 print(f"  sessions_scheduled: {scheduled}")
                 print(f"  sessions_cancelled: {cancelled}")
                 if scheduled is not None and cancelled is not None:

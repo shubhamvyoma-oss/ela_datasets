@@ -55,8 +55,12 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
-    load_config, parse_retry_after_seconds, resolve_output_folder,
-    RateLimiter, PipelineRunLogger, send_run_report, DEFAULT_BLOCK_WAIT_SECONDS,
+    PipelineRunLogger,
+    RateLimiter,
+    load_config,
+    parse_retry_after_seconds,
+    resolve_output_folder,
+    send_run_report,
 )
 
 STAGE_NAME = "resolve_class_ids"

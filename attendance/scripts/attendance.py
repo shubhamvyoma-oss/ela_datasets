@@ -92,12 +92,11 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import common
-
 import pandas as pd
 import requests
 import yaml
 
+import common
 
 # ============================================================
 # CONSTANTS
@@ -345,7 +344,7 @@ class LockFile:
                 self.log.warning(f"Stale lock (PID {pid} not running). Removing.")
                 self.path.unlink()
             except ValueError:
-                self.log.warning(f"Unreadable lock file. Removing.")
+                self.log.warning("Unreadable lock file. Removing.")
                 self.path.unlink()
         self.path.write_text(str(os.getpid()))
         self.log.debug(f"Lock acquired (PID {os.getpid()})")

@@ -43,7 +43,6 @@ sys.pycache_prefix = os.path.normpath(
 
 import argparse
 import csv
-import glob
 import re
 from pathlib import Path
 
@@ -119,7 +118,7 @@ def dial_code_to_country(raw_dial_code: str) -> str:
 
 
 def process_csv(input_path: Path, output_path: Path, dial_code_column: str, encoding: str):
-    with open(input_path, "r", newline="", encoding=encoding) as f_in:
+    with open(input_path, newline="", encoding=encoding) as f_in:
         # The Edmingle export has one junk title line ("Student's Export")
         # above the real header row. Detect and preserve it separately so
         # it can be written back unchanged.

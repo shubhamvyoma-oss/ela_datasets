@@ -7,10 +7,11 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
-import requests
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(os.path.abspath(__file__)).resolve().parents[2]))
 import common

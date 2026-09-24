@@ -62,13 +62,13 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import common
-from common import RollingRateLimiter, atomic_write_json
-
 from edmingle_api import PermanentAPIError, fetch_page
 from edmingle_chunker import load_or_create_chunk_plan
 from edmingle_constants import FIELDS
 from edmingle_io_utils import format_duration, truncate_to_offset
+
+import common
+from common import RollingRateLimiter, atomic_write_json
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 

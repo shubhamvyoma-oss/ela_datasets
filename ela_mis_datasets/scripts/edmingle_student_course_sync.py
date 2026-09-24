@@ -16,19 +16,20 @@
 from __future__ import annotations
 
 # Standard library — file, system, network, data handling
-import argparse       # parse command line arguments (--config flag)
-import csv            # read and write CSV files
-import json           # read and write JSON config and state files
-import logging        # structured logging to file and console
-import os             # file system operations (fsync, replace)
-import re             # regex for parsing legacy page number file
-import shutil         # disk usage check + file copy
-import sys            # exit codes and Python version info
-import time           # sleep between API calls and timing
-import uuid           # generate unique temp filenames for atomic writes
-from datetime import datetime, timezone   # timestamps for state and logging
-from pathlib import Path                  # cross-platform file paths
-from typing import Any, Iterable          # type hints
+import argparse  # parse command line arguments (--config flag)
+import csv  # read and write CSV files
+import json  # read and write JSON config and state files
+import logging  # structured logging to file and console
+import os  # file system operations (fsync, replace)
+import re  # regex for parsing legacy page number file
+import shutil  # disk usage check + file copy
+import sys  # exit codes and Python version info
+import time  # sleep between API calls and timing
+import uuid  # generate unique temp filenames for atomic writes
+from collections.abc import Iterable  # type hints
+from datetime import datetime  # timestamps for state and logging
+from pathlib import Path  # cross-platform file paths
+from typing import Any
 
 # Shared bytecode cache for every ela_datasets/ pipeline -- must be set
 # before any local module import below, so this and every module it pulls
@@ -43,12 +44,10 @@ sys.pycache_prefix = os.path.normpath(
 # live in ela_datasets/common.py, two directories up from this script
 # (scripts/ -> ela_mis_datasets/ -> ela_datasets/).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import common
-
 # Third-party — must be installed via: pip install requests
 import requests
-import yaml            # read shared credentials.yaml / notifications.yaml
 
+import common
 from common import (
     RollingRateLimiter,
     atomic_write_csv,
@@ -57,7 +56,6 @@ from common import (
     read_csv_rows,
     utc_now,
 )
-
 
 # =============================================================================
 # SECTION 1A — SCRIPT DIRECTORY ANCHOR

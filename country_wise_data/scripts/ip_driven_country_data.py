@@ -139,7 +139,7 @@ def load_config(config_path: Path) -> dict:
             f"Copy ip_driven_country_data_config.example.json to "
             f"{config_path.name} and fill in your settings first."
         )
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
 
     required = ["base_url", "filter_key", "start_date", "end_date"]
@@ -210,7 +210,7 @@ def _retry_file_op(op_name: str, fn, *args, **kwargs):
 def load_checkpoint(path: Path) -> dict:
     if not path.exists():
         return {"last_completed_page": 0, "csv_byte_offset": 0, "rows_written": 0}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     data.setdefault("rows_written", 0)  # backward-compatible with older checkpoints
     return data

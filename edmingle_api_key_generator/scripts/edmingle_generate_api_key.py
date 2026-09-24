@@ -19,9 +19,8 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
-import requests
-
 import edmingle_api_key_settings as settings
+import requests
 from edmingle_api_key_email import EmailDeliveryError, send_api_key_email
 from edmingle_credentials_writer import CredentialsUpdateError, update_shared_api_key
 

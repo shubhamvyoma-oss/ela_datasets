@@ -22,19 +22,18 @@ Adapted from the request_json() pattern in edmingle_student_course_sync.py:
 
 import json
 import logging
-import time
-from typing import Any, Callable
-
-import os
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from common import RollingRateLimiter
-
 from edmingle_constants import BASE_URL, PERMANENT_HTTP_STATUSES, TRANSIENT_HTTP_STATUSES
+
+from common import RollingRateLimiter
 
 
 class PermanentAPIError(RuntimeError):

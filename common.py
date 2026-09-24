@@ -29,10 +29,11 @@ import smtplib
 import time
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import yaml
 
@@ -47,7 +48,7 @@ def load_credentials(path: str | Path | None = None) -> dict:
     root). Raises FileNotFoundError / yaml errors as-is -- every pipeline
     has always treated a missing/malformed credentials file as fatal."""
     p = Path(path) if path else REPO_ROOT / "credentials.yaml"
-    with open(p, "r", encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return data.get("edmingle", {})
 
@@ -59,7 +60,7 @@ def load_notifications(pipeline_dir: str | Path) -> dict:
     p = Path(pipeline_dir) / "notifications.yaml"
     if not p.exists():
         return {}
-    with open(p, "r", encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -165,7 +166,7 @@ class RollingRateLimiter:
 # --------------------------------------------------------------- file I/O
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def format_duration(seconds: float) -> str:
