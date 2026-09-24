@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
-# Vyoma Samskrta Pathasala — Edmingle Data Pipeline
-# Script    : edmingle_student_course_sync.py
-# Purpose   : Fetch all student profiles and course enrollments from Edmingle API
-# Author    : Shankararama Sharma (core logic) | Shubham (improvements)
-# Modified  : June 2026
-# Run time  : ~68-80 hours for full run of 122,000+ students
-# Resume    : Automatically resumes from last checkpoint if interrupted
-
-
-# =============================================================================
-# SECTION 1 — IMPORTS
-# Standard library + third-party dependencies
-# =============================================================================
+# Fetches all student profiles and course enrollments from Edmingle.
+# Author: Shankararama Sharma (core logic), Shubham (improvements). ~68-80hr full run, auto-resumes.
 
 from __future__ import annotations
 
@@ -31,18 +20,13 @@ from datetime import datetime  # timestamps for state and logging
 from pathlib import Path  # cross-platform file paths
 from typing import Any
 
-# Shared bytecode cache for every ela_datasets/ pipeline -- must be set
-# before any local module import below, so this and every module it pulls
-# in gets compiled into one shared location instead of a scripts/__pycache__
-# folder per pipeline.
+# Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
-# Shared helpers (credentials/notifications loading, email sending, the
-# rolling-window rate limiter, and crash-safe atomic write helpers) now
-# live in ela_datasets/common.py, two directories up from this script
-# (scripts/ -> ela_mis_datasets/ -> ela_datasets/).
+# Shared helpers (credentials/notifications, email, rate limiter, atomic writes) live in
+# ela_datasets/common.py, two directories up (scripts/ -> ela_mis_datasets/ -> ela_datasets/).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # Third-party — must be installed via: pip install requests
 import requests
@@ -57,30 +41,13 @@ from common import (
     utc_now,
 )
 
-# =============================================================================
-# SECTION 1A — SCRIPT DIRECTORY ANCHOR
-# All output/state/log files must resolve relative to THIS script's own
-# folder, not the process's current working directory (cwd). Without this,
-# running the script from a different cwd (e.g. `python /full/path/to/
-# edmingle_student_course_sync.py` while sitting in an unrelated directory)
-# would scatter its CSV/JSON/log files into whatever folder happened to be
-# the caller's cwd instead of ela_mis_datasets/.
-# =============================================================================
-
+# All output/state/log files resolve relative to this script's own folder, not the caller's cwd.
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # All generated CSV/state/log/legacy files now live in output/, a sibling
 # of this script's own scripts/ folder, rather than alongside the script.
 OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
 
-
-# =============================================================================
-# SECTION 1B — SHARED CREDENTIAL / NOTIFICATION LOADERS
-# credentials.yaml (one level up, shared by every pipeline in ela_datasets/)
-# holds the Edmingle api_key/organization_id.
-# notifications.yaml (same directory as this script) holds this pipeline's
-# own SMTP/email alert settings.
-# =============================================================================
 
 def _load_credentials(base_dir: Path) -> dict[str, Any]:
     # Reads the shared credentials.yaml one directory above this pipeline.
@@ -110,28 +77,12 @@ _email_config = (_notifications_config.get("channels", {}) or {}).get("email", {
 _smtp_config = _email_config.get("smtp", {}) or {}
 
 
-# =============================================================================
-# SECTION 2 — ALERT CONFIGURATION
-# Email credentials/SMTP mechanics for failure and completion notifications
-# now live in common.send_mail() (see send_email_alert below), which reads
-# them straight from _notifications_config -- no separate module-level
-# ALERT_EMAIL_*/SMTP_HOST/SMTP_PORT constants needed here any more.
-# =============================================================================
-
-# How often (in seconds) to send a periodic status-update email during the
-# course pull, expressed in notifications.yaml as hours (default 6 hours =
-# 21600 seconds — the value this replaced when it was a hardcoded constant).
-# Loaded from notifications.yaml -> channels.email.status_update_interval_hours
+# Periodic status-email interval during the course pull, from notifications.yaml's
+# channels.email.status_update_interval_hours (default 6h), converted to seconds.
 STATUS_UPDATE_INTERVAL = int(
     float(_email_config.get("status_update_interval_hours", 6)) * 3600
 )
 
-
-# =============================================================================
-# SECTION 3 — FIELD DEFINITIONS
-# Column names for the two output CSV files
-# These must exactly match what the Edmingle API returns
-# =============================================================================
 
 # Columns saved to edmingle_students.csv — one row per student
 STUDENT_FIELDS = [
@@ -204,11 +155,6 @@ COURSE_FIELDS = [
 ]
 
 
-# =============================================================================
-# SECTION 4 — FILE AND API CONSTANTS
-# Output filenames and Edmingle API endpoint URLs
-# =============================================================================
-
 # Default output file names — all saved in same folder as this script
 DEFAULT_FILES = {
     "student_master":        "edmingle_students.csv",                       # final student output
@@ -233,36 +179,14 @@ PERMANENT_HTTP_STATUSES = {400, 401, 403, 404}
 TRANSIENT_HTTP_STATUSES = {408, 429}
 
 
-# =============================================================================
-# SECTION 5 — EMAIL ALERT FUNCTION  [ADDED BY SHUBHAM]
-# Sends notification email on script failure or completion via
-# common.send_mail() -- skips silently (logs a warning) if email is
-# disabled or SMTP config is incomplete in notifications.yaml
-# =============================================================================
-
 def send_email_alert(subject: str, body: str) -> None:
-    # Connect-and-send mechanics now delegate to common.send_mail(), which
-    # is a drop-in replacement for the previous smtplib/EmailMessage logic
-    # here: it also treats the from-address as the SMTP login username (no
-    # separate username field in this pipeline's notifications.yaml), and
-    # accepts to_addresses as a comma-separated string (as stored in
-    # _email_config) or a list. It never raises -- logs a warning and
-    # returns False instead -- matching this function's original
-    # "never let email failure crash the main pipeline" behavior. Uses the
-    # notifications.yaml already loaded once at import time (module-level
-    # _notifications_config) so every existing call site (startup checks,
-    # error handlers, completion, mid-run status, etc.) needs no changes.
+    # Delegates to common.send_mail() -- never raises, logs a warning and returns instead,
+    # so email failure never crashes the pipeline.
     logger = logging.getLogger("edmingle_sync")
     common.send_mail(_notifications_config, subject, body, logger)
 
 
-# =============================================================================
-# SECTION 6 — STARTUP CHECKS  [ADDED BY SHUBHAM]
-# Validates environment before starting the 80-hour run
-# Checks 3 things: Python version, disk space, API key validity
-# Sends email and exits immediately if any check fails
-# =============================================================================
-
+# Validates disk space + API key before starting the ~80hr run; emails and exits on failure.
 def run_startup_checks(config: dict[str, Any]) -> None:
     print("=" * 55)
     print("  VYOMA EDMINGLE SYNC — STARTUP CHECKS")
@@ -330,12 +254,7 @@ def run_startup_checks(config: dict[str, Any]) -> None:
     print()
 
 
-# =============================================================================
-# SECTION 7 — STARTUP SUMMARY  [ADDED BY SHUBHAM]
-# Logs key run info to the log file before the pipeline starts
-# Shows rate, disk space, resume point, and estimated completion time
-# =============================================================================
-
+# Logs rate/disk/resume-point/ETA to the log file before the pipeline starts.
 def print_startup_summary(config: dict[str, Any], state: dict[str, Any]) -> None:
     # Read current state values
     last_page          = state.get("last_completed_student_page", 0)
@@ -374,30 +293,13 @@ def print_startup_summary(config: dict[str, Any], state: dict[str, Any]) -> None
     logger.info("=" * 50)
 
 
-# =============================================================================
-# SECTION 8 — CUSTOM EXCEPTION
-# Raised when an API error means retrying will never help
-# =============================================================================
-
 class PermanentAPIError(RuntimeError):
-    # Used for HTTP 401, 403, 404 — no point retrying these
-    pass
+    """HTTP 401/403/404 -- retrying will never help."""
 
 
-# =============================================================================
-# SECTION 9 — UTILITY FUNCTIONS
-# Small helpers used throughout the script
-#
-# utc_now, format_duration, atomic_write_json, atomic_write_csv, and
-# read_csv_rows used to be defined here but were byte-for-byte identical
-# (temp-file + fsync + os.replace mechanics, same ISO-8601 timestamp format,
-# same duration breakdown) to the versions now consolidated in the shared
-# ela_datasets/common.py, so they are imported from there instead (see the
-# `from common import ...` line near the top of this file). Only
-# atomic_copy, parse_legacy_page, calculate_start_page, merge_students, and
-# extract_student remain here -- they are specific to this pipeline's
-# legacy-migration and student/course business logic.
-# =============================================================================
+# The rest of this pipeline's generic helpers (utc_now, format_duration, atomic_write_json/csv,
+# read_csv_rows) now live in common.py -- only the legacy-migration/business-logic ones specific
+# to this pipeline remain below.
 
 def atomic_copy(source: Path, destination: Path) -> None:
     # Copies a file atomically — used for legacy file migration
@@ -471,28 +373,8 @@ def extract_student(student: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-# =============================================================================
-# SECTION 10 — RATE LIMITER
-# Ensures script stays within max_calls_per_minute from config
-# Uses rolling window — more precise than fixed sleep between calls
-#
-# The RollingRateLimiter class used to be defined here (deque-based rolling
-# window, with an injectable clock=/sleep= pair that nothing in this repo
-# ever overrode) but was byte-for-byte identical in behavior to the shared
-# version consolidated into ela_datasets/common.py (minus the unused
-# clock=/sleep= injection points, which common.py drops in favor of
-# time.monotonic/time.sleep directly) -- it is imported from there instead
-# (see the `from common import RollingRateLimiter` line near the top of
-# this file).
-# =============================================================================
-
-
-# =============================================================================
-# SECTION 11 — MAIN SYNC CLASS
-# Core pipeline — student data fetch and course enrollment fetch
-# Original logic by Shankararama Sharma — only run() method was modified
-# =============================================================================
-
+# Core pipeline -- student data fetch and course enrollment fetch. Original logic by
+# Shankararama Sharma; only run() was modified since. RollingRateLimiter itself lives in common.py.
 class EdmingleSync:
 
     def __init__(
@@ -501,20 +383,10 @@ class EdmingleSync:
         session: requests.Session | Any | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        # Previously accepted injectable `sleep=`/`clock=` params (separate
-        # from the rate limiter's own, now-removed clock=/sleep= pair) for
-        # test seams. Confirmed via a repo-wide grep that nothing anywhere
-        # (this file's own single call site in main(), and no test in the
-        # repo) ever constructs EdmingleSync with non-default sleep/clock
-        # arguments, so they're removed here too -- internal use now calls
-        # time.sleep()/time.monotonic() directly (see request_json below).
         self.config_path = config_path.resolve()
         self.base_dir    = self.config_path.parent
         self.config      = self._load_config()
-        # Build full file paths anchored to SCRIPT_DIR (this script's own
-        # folder) — not the cwd the process happened to be launched from —
-        # so output/state/log files always land in ela_mis_datasets/
-        # regardless of how/from-where the script was invoked.
+        # Anchored to SCRIPT_DIR, not the caller's cwd, so output always lands in ela_mis_datasets/.
         self.paths = {
             name: OUTPUT_DIR / self.config.get("files", {}).get(name, default)
             for name, default in DEFAULT_FILES.items()
@@ -989,12 +861,6 @@ class EdmingleSync:
         )
 
 
-# =============================================================================
-# SECTION 12 — LOGGING SETUP
-# Writes structured logs to both file and terminal console
-# Log format: 2026-06-25 09:30:00 INFO message here
-# =============================================================================
-
 def configure_logging(log_path: Path) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("edmingle_sync")
@@ -1015,13 +881,7 @@ def configure_logging(log_path: Path) -> logging.Logger:
     return logger
 
 
-# =============================================================================
-# SECTION 13 — ARGUMENT PARSER
-# Allows overriding config file path from command line
-# Default: looks for edmingle_sync_config.json in same folder as this script
-# Usage  : python3 edmingle_student_course_sync.py --config /path/to/config.json
-# =============================================================================
-
+# Usage: python3 edmingle_student_course_sync.py --config /path/to/config.json
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Incrementally sync Edmingle students and rebuild course enrollments."
@@ -1035,13 +895,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# =============================================================================
-# SECTION 14 — MAIN ENTRY POINT  [MODIFIED BY SHUBHAM]
-# Runs startup checks then starts the sync pipeline
-# On crash: writes SCRIPT_FAILED.txt, sends email alert, returns exit code 1
-# On Ctrl+C: logs clean interrupt message, returns exit code 130
-# =============================================================================
-
+# Runs startup checks then the sync pipeline. Crash -> SCRIPT_FAILED.txt + email, exit 1.
+# Ctrl+C -> clean interrupt log, exit 130.
 def main() -> int:
     args = parse_args()
     try:
