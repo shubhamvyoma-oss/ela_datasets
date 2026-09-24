@@ -1,55 +1,8 @@
 """
-attendance.py
-==============================
-
-Production-grade Edmingle report_type=55 attendance pipeline.
-Pulls daily attendance data for a date range, saves raw staging CSVs
-per day, combines them, and produces a one-row-per-batch summary.
-
-Designed for long multi-month runs (Jan 2025 to Jun 2026 = 546 days,
-~68 min runtime, ~150 MB raw output) with full operational robustness:
-
-    - Paths + behaviour in config.yaml; Edmingle API credentials in the
-      shared ../../credentials.yaml; email/SMTP settings in notifications.yaml
-      -- never hardcoded here
-    - Rotating daily log file (30-day retention)
-    - Checkpoint / resume  -- kill and restart at any point safely
-    - Lock file            -- prevents concurrent duplicate runs
-    - Startup API validation before the long loop begins
-    - Disk space check before starting
-    - Exponential backoff + jitter for 429 / 5xx / timeouts
-    - Retry-After header respected for 429 rate-limit responses
-    - Fatal stops (no retry) for 401 / 403 / 404 + immediate email
-    - Consecutive-error circuit breaker
-    - Per-day staging CSVs (one file per date = resumable after crash)
-    - SIGINT / SIGTERM handler -- checkpoints cleanly before exit
-    - HTML email alerts: critical errors, warnings, and completion
-    - Dry-run mode -- logs and simulates everything, calls no real API
-    - --retry-failed flag -- re-process only previously failed dates
-
-NETWORK RESILIENCE (v1.2.0)
-    Network outages NO LONGER kill the run. When a request fails
-    because the internet itself is down (DNS failure / no route),
-    the pipeline pauses, probes connectivity every
-    api.connectivity_check_interval_seconds, and automatically
-    resumes the SAME date the moment the connection returns.
-    Offline waiting does NOT consume retry attempts and does NOT
-    trip the circuit breaker -- those are reserved for genuine API
-    failures while the internet is up (e.g. Edmingle itself down).
-    api.max_offline_wait_minutes caps the wait (0 = wait forever).
-
-    Device shutdown / power loss: per-day staging CSVs + checkpoint
-    mean at most the in-flight date is re-fetched. Re-run the same
-    command after boot and it resumes. Pair with run_pipeline.bat
-    (auto-restart wrapper) + Windows Task Scheduler "At startup"
-    trigger for fully hands-off recovery.
-
-STUDENT STATUS FILTERING (v1.1.0)
-    Only ACTIVE students are counted. Any row whose studentBatchStatus
-    is not in pipeline.active_status_values (default: ["Active"]) --
-    e.g. "Archived" -- is dropped during cleaning. This is ON by
-    default; set pipeline.exclude_inactive_students: false in
-    config.yaml to disable.
+attendance.py -- Edmingle report_type=55 attendance pipeline: fetches daily attendance for a date
+range, stages one CSV per day (crash-safe resume), and produces a per-batch summary CSV. Full
+behavior (checkpointing, retry/backoff, network-outage handling, email alerts, config keys) is
+documented in ../ATTENDANCE.md, not repeated here.
 
 USAGE
   python attendance.py --from 2020-01-01 --to 2026-08-31
@@ -60,9 +13,6 @@ USAGE
   python attendance.py --retry-failed        # re-run failed dates only
   python attendance.py --reset-checkpoint    # start fresh
   python attendance.py --config /other/config.yaml ...
-
-DEPENDENCIES
-  pip install pandas requests pyyaml
 """
 
 import argparse
@@ -83,10 +33,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
-# Shared bytecode cache for every ela_datasets/ pipeline -- must be set
-# before any local module import below, so this and every module it pulls
-# in gets compiled into one shared location instead of a scripts/__pycache__
-# folder per pipeline.
+# Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
@@ -98,9 +45,7 @@ import yaml
 
 import common
 
-# ============================================================
-# CONSTANTS
-# ============================================================
+# ── CONSTANTS ──
 
 VERSION = "1.2.0"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -115,11 +60,8 @@ OUTPUT_COLUMNS = [
     "retention_percentage", "attendance_drop",
 ]
 
-# One row per (batch, session) -- written as the session-wise CSV.
-# NOTE: total_classes_remaining = planned - conducted. With report_type=55
-# "planned" only includes sessions present in the report data, so remaining
-# stays 0 unless the report contains future-dated sessions. True remaining
-# counts need the batch schedule endpoint (future enhancement).
+# One row per (batch, session). NOTE: total_classes_remaining stays 0 unless the report includes
+# future-dated sessions -- true remaining counts need the batch schedule endpoint (not this one).
 SESSION_OUTPUT_COLUMNS = [
     "batch_Id", "batchName", "course_Id", "courseName", "session_number",
     "classDate", "is_conducted", "present_count", "absent_count",
@@ -127,9 +69,7 @@ SESSION_OUTPUT_COLUMNS = [
 ]
 
 
-# ============================================================
-# CUSTOM EXCEPTIONS
-# ============================================================
+# ── CUSTOM EXCEPTIONS ──
 
 class FatalAPIError(Exception):
     """401 / 403 / 404 -- no retry, stop the run immediately."""
@@ -138,9 +78,7 @@ class PipelineError(Exception):
     """General unrecoverable pipeline error."""
 
 
-# ============================================================
-# CONFIG
-# ============================================================
+# ── CONFIG ──
 
 _DEFAULTS = {
     "api": {
@@ -208,18 +146,14 @@ def load_config(config_path: str) -> dict:
     if not path.exists():
         sys.exit(
             f"\nConfig file not found: {config_path}\n"
-            f"Copy config.yaml.example to config.yaml, fill in your credentials.\n"
+            f"See ../ATTENDANCE.md for the required config.yaml keys.\n"
         )
     with open(path, encoding="utf-8") as f:
         user_cfg = yaml.safe_load(f) or {}
 
     cfg = _deep_merge(_DEFAULTS, user_cfg)
 
-    # ── Shared Edmingle credentials (ela_datasets/credentials.yaml) ──────
-    # The Edmingle API key + org id are shared by every pipeline under
-    # ela_datasets/ and live in one place, two levels above this script's
-    # own folder (attendance/scripts/attendance.py -> ela_datasets/).
-    # They are no longer read from config.yaml.
+    # Edmingle API key/org id are shared across every ela_datasets/ pipeline, not read from config.yaml.
     script_dir = Path(__file__).resolve().parent
     creds_path = script_dir.parent.parent / "credentials.yaml"
     if not creds_path.exists():
@@ -228,10 +162,7 @@ def load_config(config_path: str) -> dict:
     cfg["api"]["key"]    = edmingle_cfg.get("api_key", "")
     cfg["api"]["org_id"] = str(edmingle_cfg.get("organization_id", ""))
 
-    # ── Per-pipeline notification settings (../notifications/attendance.yaml) ──
-    # Email/SMTP settings are dedicated to this pipeline (not shared), and
-    # live in the repo-wide notifications/ folder (2026-09-25), not this
-    # pipeline's own scripts/ folder.
+    # Per-pipeline notification config, in the repo-wide notifications/ folder.
     notif_path = common.REPO_ROOT / "notifications" / "attendance.yaml"
     if not notif_path.exists():
         sys.exit(f"\nNotifications file not found: {notif_path}\n")
@@ -268,16 +199,8 @@ def load_config(config_path: str) -> dict:
     if not str(cfg["api"].get("org_id", "")).strip():
         sys.exit(f"\nMissing edmingle.organization_id in shared credentials file: {creds_path}\n")
 
-    # ── Anchor relative path config values to THIS SCRIPT'S folder ───────
-    # A bare relative string in YAML (e.g. "." or "./logs") resolves
-    # against the process's current working directory at runtime -- which
-    # is NOT the same as "the script's own folder" if the pipeline is
-    # invoked from elsewhere (cron, Task Scheduler, a wrapper .bat that
-    # cd's somewhere else, etc). Anchor explicitly to script_dir (with
-    # config.yaml's paths pointing at ../output) so output always lands in
-    # the attendance/output/ folder regardless of the caller's cwd.
-    # Absolute paths (still supported, e.g. for a dedicated data drive)
-    # are left untouched.
+    # Anchor relative paths to this script's folder, not the caller's cwd (matters when launched
+    # from cron/Task Scheduler/a wrapper that cd's elsewhere). Absolute paths are left untouched.
     for _key in ("output_folder", "log_folder", "staging_folder",
                  "checkpoint_file", "lock_file"):
         _val = cfg["paths"].get(_key)
@@ -292,9 +215,7 @@ def load_config(config_path: str) -> dict:
     return cfg
 
 
-# ============================================================
-# LOGGING
-# ============================================================
+# ── LOGGING ──
 
 def setup_logging(cfg: dict, verbose: bool = False) -> logging.Logger:
     log_dir = Path(cfg["paths"]["log_folder"])
@@ -323,9 +244,7 @@ def setup_logging(cfg: dict, verbose: bool = False) -> logging.Logger:
     return logger
 
 
-# ============================================================
-# LOCK FILE
-# ============================================================
+# ── LOCK FILE ──
 
 class LockFile:
     def __init__(self, path: str, log: logging.Logger):
@@ -372,9 +291,7 @@ class LockFile:
             return False
 
 
-# ============================================================
-# CHECKPOINT
-# ============================================================
+# ── CHECKPOINT ──
 
 class Checkpoint:
     SUCCESS = "success"
@@ -432,9 +349,7 @@ class Checkpoint:
         tmp.replace(self.path)
 
 
-# ============================================================
-# EMAIL
-# ============================================================
+# ── EMAIL ──
 
 class EmailNotifier:
     """HTML email alerts. Never raises -- email failure never crashes the pipeline."""
@@ -506,9 +421,7 @@ class EmailNotifier:
         self._send("[SUCCESS] Edmingle Pipeline -- Run Complete", body)
 
 
-# ============================================================
-# DISK SPACE CHECK
-# ============================================================
+# ── DISK SPACE CHECK ──
 
 def check_disk_space(cfg: dict, log: logging.Logger):
     required_mb = cfg["pipeline"]["min_free_disk_mb"]
@@ -529,9 +442,7 @@ def check_disk_space(cfg: dict, log: logging.Logger):
         log.warning(f"Disk space check skipped ({e}). Continuing.")
 
 
-# ============================================================
-# API LAYER
-# ============================================================
+# ── API LAYER ──
 
 def build_api_session() -> requests.Session:
     return requests.Session()
@@ -826,9 +737,7 @@ def validate_api_connection(session: requests.Session, cfg: dict, log: logging.L
         raise PipelineError(f"API validation failed: {e}")
 
 
-# ============================================================
-# DATE HELPERS
-# ============================================================
+# ── DATE HELPERS ──
 
 def build_date_list(args, cfg: dict) -> list:
     if args.date:
@@ -851,9 +760,7 @@ def build_date_list(args, cfg: dict) -> list:
     return dates
 
 
-# ============================================================
-# PULL ORCHESTRATION
-# ============================================================
+# ── PULL ORCHESTRATION ──
 
 def run_pull_loop(
     dates: list,
@@ -975,9 +882,7 @@ def run_pull_loop(
     return successful_files
 
 
-# ============================================================
-# COMBINE STAGING FILES
-# ============================================================
+# ── COMBINE STAGING FILES ──
 
 def combine_staging_files(
     file_paths: list, cfg: dict, label: str, log: logging.Logger
@@ -1020,9 +925,7 @@ def combine_staging_files(
     return combined
 
 
-# ============================================================
-# CLEAN + VALIDATE
-# ============================================================
+# ── CLEAN + VALIDATE ──
 
 def resolve_session_id_column(df: pd.DataFrame, cfg: dict, log: logging.Logger) -> str:
     col = cfg["pipeline"]["session_id_column"]
@@ -1135,9 +1038,7 @@ def validate_present_value(df: pd.DataFrame, cfg: dict):
         )
 
 
-# ============================================================
-# BATCH SUMMARY COMPUTATION
-# ============================================================
+# ── BATCH SUMMARY COMPUTATION ──
 
 def build_class_summary(df: pd.DataFrame, session_col: str, cfg: dict) -> pd.DataFrame:
     TODAY = pd.Timestamp(datetime.now(IST).date())
@@ -1264,9 +1165,7 @@ def build_session_wise_output(df: pd.DataFrame, session_col: str, cfg: dict) -> 
     return out[keep]
 
 
-# ============================================================
-# MAIN
-# ============================================================
+# ── MAIN ──
 
 def main():
     parser = argparse.ArgumentParser(
