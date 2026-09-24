@@ -1,42 +1,12 @@
 """
-pipeline_common.py
---------------------------------------------------------------------------
-Shared helpers used by every network-calling script in the pipeline:
-config loading, HTTP 429 backoff parsing, output-folder resolution,
-rate-limit spacing, per-run file logging, and the end-of-run email report.
-Centralized here so the 4 pipeline scripts can't drift into 4 slightly
-different copies of the same logic (they used to each carry their own).
-
-CREDENTIALS
------------
-The Edmingle api_key/org_id/orgid/institute_id come from the shared
-../../credentials.yaml (one Edmingle key for every pipeline under
-ela_datasets/ -- see that file's header comment), and SMTP settings come
-from this pipeline's own config in the repo-wide
-../../notifications/session_wise_attendance.yaml (recipients/channels are
-per-pipeline, not shared -- only the location is centralized). load_config() merges both onto the dict it
-returns, in the exact same shape (api_key/org_id/orgid/institute_id/smtp
-keys) the 5 scripts already read -- so no other call site needs to change.
-
-config.yaml (removed 2026-09-23) used to hold a handful of tunables
-(base_url, output_folder, roster_gap_filler_enabled,
-exclude_archived_students, timezone, crossvalidation.*) alongside the
-credentials above. Every one of those was either never actually read by
-any script (base_url, roster_gap_filler_enabled, exclude_archived_students,
-checkpoint_folder, log_folder, crossvalidation.default_class_id/
-default_start_date) or already had a safe inline default at its one call
-site (output_folder in resolve_output_folder(), crossvalidation's
-output_filename in attendance_crossvalidation.py) -- so removing the file
-needed no fallback logic added here, just removing the now-pointless
-config.yaml read itself.
-
-The actual credentials.yaml/notifications.yaml file reading and the SMTP
-connect-and-send mechanics delegate to ela_datasets/common.py
-(common.load_credentials / common.load_notifications / common.send_mail) --
-the same helpers 5 other pipelines under ela_datasets/ already use.
+pipeline_common.py -- shared helpers for this pipeline's 4 network-calling scripts: config
+loading, HTTP 429 backoff parsing, output-folder resolution, rate-limit spacing, per-run file
+logging, and the end-of-run email report. Credentials/notifications file reading and SMTP
+mechanics delegate to ela_datasets/common.py; config.yaml was removed 2026-09-23 (see
+../SESSION_WISE_ATTENDANCE.md) since every key it held was either unread or already had a safe
+inline default.
 
 USAGE
------
     from pipeline_common import (
         load_config, parse_retry_after_seconds, resolve_output_folder,
         RateLimiter, PipelineRunLogger, send_run_report,
@@ -49,11 +19,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Pipeline scripts only add their own scripts/ folder to sys.path (see the
-# sys.path.insert line near the top of each of the 4 entry points), not the
-# ela_datasets/ repo root -- so this module adds it itself before importing
-# the shared common.py. session_wise_attendance/scripts/pipeline_common.py
-# -> parents[0]=scripts, [1]=session_wise_attendance, [2]=ela_datasets.
+# The 4 entry-point scripts only add their own scripts/ folder to sys.path, not the
+# ela_datasets/ repo root -- so this module adds it itself before importing common.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import common
 
@@ -203,10 +170,8 @@ class PipelineRunLogger:
 
     def __init__(self, stage_name: str, script_path: Path, args_summary: str = ""):
         self.stage_name = stage_name
-        # Scripts live in this pipeline's scripts/ subfolder now; run logs
-        # are generated output, so they go under <script's folder>/../output
-        # (the pipeline's output/ subfolder), same convention as
-        # resolve_output_folder(), not next to the scripts themselves.
+        # Run logs are generated output, so they go under ../output/logs/, same convention as
+        # resolve_output_folder() -- not next to the scripts themselves.
         self.logs_dir = (script_path.parent / ".." / "output" / "logs" / stage_name).resolve()
         self.args_summary = args_summary
         self.start_time = None

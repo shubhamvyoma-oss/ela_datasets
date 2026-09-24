@@ -36,10 +36,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Shared bytecode cache for every ela_datasets/ pipeline -- must be set
-# before any local module import below, so this and every module it pulls
-# in gets compiled into one shared location instead of a scripts/__pycache__
-# folder per pipeline.
+# Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
@@ -111,11 +108,9 @@ def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int,
                       f"response: {resp.text[:300]}")
             resp.raise_for_status()
             data = resp.json()
-            # REAL response shape (confirmed live — Edmingle's docs were wrong):
-            # {"code":200,"class":{"courses_array":[{...actual subject/class_id...}],
-            #  "class_id": <this is actually the BATCH id>, ...}}
-            # The real subject-level class_id is nested under class.courses_array[],
-            # already as proper dicts — no array-index mapping needed.
+            # Real response shape (confirmed live, Edmingle's docs were wrong): the top-level
+            # "class_id" is actually the BATCH id -- real subject-level class_ids are nested
+            # under class.courses_array[].
             class_obj = data.get("class", {})
             return class_obj.get("courses_array", [])
 

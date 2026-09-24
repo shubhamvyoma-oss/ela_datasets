@@ -40,10 +40,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Shared bytecode cache for every ela_datasets/ pipeline -- must be set
-# before any local module import below, so this and every module it pulls
-# in gets compiled into one shared location instead of a scripts/__pycache__
-# folder per pipeline.
+# Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
@@ -201,10 +198,8 @@ def unix_to_ist(ts, fmt: str = "%Y-%m-%d %H:%M:%S"):
     return dt.strftime(fmt)
 
 
-# Base session columns, in the order they should appear in any CSV built
-# from sessions_to_dataframe. build_session_attendance.py (Stage 3) extends
-# this with bundle_id/bundle_name, which only it has access to via the
-# class_id lookup file.
+# Base session columns for any CSV built from sessions_to_dataframe. Stage 3
+# (build_session_attendance.py) extends this with bundle_id/bundle_name.
 SESSION_BASE_COLUMNS = [
     "session_id", "class_id", "class_name", "master_batch_id", "master_batch_name",
     "class_date", "total_enrolled_at_session", "present", "not_marked", "attendance_pct",
@@ -276,10 +271,8 @@ def sessions_to_dataframe(classes: list) -> pd.DataFrame:
         df["master_batch_id"] = df["master_batch_id"].astype("Int64")
         # Sort by actual IST session start rather than the (now-removed) raw unix column
         df = df.sort_values("session_start_ist").reset_index(drop=True)
-        # session_number = sequential count within each batch, in chronological order.
-        # Every row returned by the API for a given class_id/master_batch_id counts as
-        # a PLANNED session (Edmingle only returns scheduled slots) — session_conducted
-        # tells you whether that planned slot actually happened.
+        # Sequential count within each batch, chronological. Every API row is a PLANNED
+        # session (Edmingle only returns scheduled slots) -- session_conducted says whether it happened.
         df["session_number"] = df.groupby("master_batch_id").cumcount() + 1
         df = df[SESSION_BASE_COLUMNS]
     return df
