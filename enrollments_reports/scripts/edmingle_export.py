@@ -1,30 +1,9 @@
 #!/usr/bin/env python3
 """
-edmingle_export.py
-
-Pulls row-level enrollment data from Edmingle's /reports/enrollment endpoint
-(report_details_type=3) for a date range, in <=chunk_days windows (Edmingle
-blocks large single-shot ranges — see edmingle_chunker.py), and writes it
-to CSV.
-
-Rebuilt around the patterns in edmingle_student_course_sync.py:
-
-  - EdmingleExportRun bundles config/paths/session/logger/rate-limiter as
-    instance state, instead of passing a dozen arguments around.
-  - Resume uses byte-offset truncation (edmingle_io_utils.truncate_to_offset):
-    the checkpoint records the exact CSV file size right after a confirmed,
-    flushed+fsynced write. On resume, the CSV is truncated back to that exact
-    byte offset before continuing, so any partial write left by a crash is
-    discarded rather than trusted.
-  - Requests are paced by a RollingRateLimiter (max_calls_per_minute) instead
-    of a flat delay, and edmingle_api.fetch_page distinguishes permanent
-    errors (stop immediately) from transient ones (retry forever, capped
-    backoff) — see edmingle_api.py.
-  - Progress is logged with elapsed/ETA using format_duration(), not just a
-    running row count.
-  - Settings are fixed defaults inlined below (DEFAULTS) rather than a
-    config file or a long list of CLI flags; only --start-date/--end-date
-    genuinely vary per run.
+edmingle_export.py -- pulls row-level enrollment data from Edmingle's /reports/enrollment endpoint
+(report_details_type=3) for a date range, in <=chunk_days windows (Edmingle blocks large
+single-shot ranges), and writes it to CSV. Resumable via byte-offset checkpointing -- see
+../ENROLLMENTS_REPORTS.md for full design rationale and known issues.
 
 Usage:
     python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
@@ -32,14 +11,6 @@ Usage:
     (--output is optional; if omitted, output goes to the fixed filename
     output/edmingle_enrollment_report.csv, overwritten on every run --
     pass --output explicitly if you need to keep a specific run's file.)
-
-Run directly (no watchdog/auto-restart wrapper -- removed 2026-09-23,
-matching edmingle_student_course_sync.py's pattern in ela_mis_datasets,
-which has never used one). If it crashes or the server restarts, just
-re-run the same command: the checkpoint means it resumes cleanly rather
-than re-fetching or duplicating data. A permanent error or unexpected
-crash emails immediately from inside main()'s own exception handling
-before exiting -- see the except blocks below.
 """
 
 import argparse
@@ -53,10 +24,7 @@ from pathlib import Path
 
 import requests
 
-# Shared bytecode cache for every ela_datasets/ pipeline -- must be set
-# before any local module import below, so this and every module it pulls
-# in gets compiled into one shared location instead of a scripts/__pycache__
-# folder per pipeline.
+# Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
 sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
@@ -72,12 +40,8 @@ from common import RollingRateLimiter, atomic_write_json
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Was edmingle_config.json -- that file's only real content was ever "{}"
-# (every pipeline run fell back to these same defaults), so the file, its
-# .example twin, and the edmingle_config.py module that loaded it are gone;
-# these are now the single source of truth. Override at the call site if a
-# run ever genuinely needs different values (there is no CLI flag for
-# these -- add one if that need actually arises).
+# Was edmingle_config.json (removed -- its only real content was ever "{}"); these are now the
+# single source of truth. No CLI flag for these -- override at the call site if ever needed.
 DEFAULTS = {
     "chunk_days": 30,
     "per_page": 200,
@@ -125,13 +89,8 @@ def setup_logging(log_path: Path) -> logging.Logger:
 
 
 def build_default_output_name(start_date: str, end_date: str) -> str:
-    # Fixed filename -- every run overwrites the same output file instead of
-    # accumulating a new one per date range (each prior run's full CSV could
-    # be 100MB+, so this used to grow storage unbounded). The checkpoint's
-    # own start_date/end_date fields (see _resolve_resume_state) already
-    # detect a differently-ranged run and correctly start fresh/overwrite,
-    # so a static name here is safe: same-range reruns still resume via the
-    # checkpoint, differently-ranged runs still get a correct fresh file.
+    # Fixed filename (bounds disk usage) -- _resolve_resume_state's own checkpoint fields already
+    # detect a differently-ranged run and correctly start fresh/overwrite.
     return "edmingle_enrollment_report.csv"
 
 

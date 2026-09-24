@@ -1,23 +1,9 @@
 """
-edmingle_api.py
-
-Fetches a single (chunk, page) from Edmingle's enrollment report endpoint.
-Adapted from the request_json() pattern in edmingle_student_course_sync.py:
-
-  - Paced by a RollingRateLimiter (max_calls_per_minute) rather than a flat
-    delay between calls.
-  - Permanent errors (400/401/403/404) raise PermanentAPIError immediately —
-    a bad API key or wrong org id won't be fixed by retrying, so we stop
-    and let the operator fix it rather than retrying forever.
-  - HTTP 429 triggers a long rate_limit_block_seconds cool-down (bigger than
-    normal backoff) and resets the rate limiter, since a 429 usually means
-    Edmingle wants a real pause, not just a shorter gap between calls.
-  - Transient errors (408/429/5xx), network errors, invalid JSON, and an
-    unexpected response shape are all retried forever with exponential
-    backoff capped at maximum_retry_delay — the external watchdog is the
-    safety net for a truly stuck process, not a retry counter in here.
-  - The response is validated (code == 200, result.studentlist is a list)
-    before being trusted, instead of assuming any 200 is well-formed.
+edmingle_api.py -- fetches a single (chunk, page) from Edmingle's enrollment report endpoint.
+Permanent errors (400/401/403/404) raise immediately, no retry; a 429 triggers a long cool-down
+(bigger than normal backoff) plus a rate-limiter reset; everything else transient retries forever
+with capped exponential backoff -- the external watchdog is the safety net for a stuck process,
+not a retry counter in here.
 """
 
 import json
