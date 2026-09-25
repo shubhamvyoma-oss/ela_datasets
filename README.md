@@ -18,7 +18,7 @@ Eight independent pipelines that pull data from Vyoma's Edmingle LMS API into CS
 | Pipeline | What it does | Docs |
 |---|---|---|
 | `attendance/` | Daily attendance (`report_type=55`) → batch + session summaries | [ATTENDANCE.md](attendance/ATTENDANCE.md) |
-| `country_wise_data/` | 3-stage: geo-IP + dial-code country signals, merged | [COUNTRY_WISE_DATA.md](country_wise_data/COUNTRY_WISE_DATA.md) |
+| `country_wise_data/` | 2-stage: geo-IP pull, then dial-code country + merge on email | [COUNTRY_WISE_DATA.md](country_wise_data/COUNTRY_WISE_DATA.md) |
 | `course_batch_merge/` | Catalogue merged with batches (all statuses) | [COURSE_BATCH_MERGE.md](course_batch_merge/COURSE_BATCH_MERGE.md) |
 | `course_catalogue_data/` | Raw, unfiltered flatten of the course catalogue | [COURSE_CATALOGUE_DATA.md](course_catalogue_data/COURSE_CATALOGUE_DATA.md) |
 | `edmingle_api_key_generator/` | Rotates the shared Edmingle API key (monthly, 25th 09:00 IST, or by hand) | [EDMINGLE_API_KEY_GENERATOR.md](edmingle_api_key_generator/EDMINGLE_API_KEY_GENERATOR.md) |

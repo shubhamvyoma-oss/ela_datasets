@@ -42,7 +42,7 @@ tmux attach -t <folder>      return to the session
 | Folder | Command (from `<folder>/scripts`) | tmux? | Guide |
 |---|---|---|---|
 | `attendance` | `python3 attendance.py --from YYYY-MM-DD --to YYYY-MM-DD` | yes (hours for long ranges) | [guide](attendance/RUN_GUIDE.md) |
-| `country_wise_data` | `python3 ip_driven_country_data.py --config ip_driven_country_data_config.json`, then `dial_code_to_country.py`, then `merge_country_data.py` | yes (Stage 1) | [guide](country_wise_data/RUN_GUIDE.md) |
+| `country_wise_data` | `python3 ip_driven_country_data.py --config ip_driven_country_data_config.json`, then `merge_country_data.py` | yes (Stage 1) | [guide](country_wise_data/RUN_GUIDE.md) |
 | `course_batch_merge` | `python3 Course_Batch_Merge.py` (capitalised) | optional | [guide](course_batch_merge/RUN_GUIDE.md) |
 | `course_catalogue_data` | `python3 course_catalogue_data.py` | no | [guide](course_catalogue_data/RUN_GUIDE.md) |
 | `edmingle_api_key_generator` | `python3 edmingle_generate_api_key.py` (also runs itself on the 25th, 09:00 IST) | no | [guide](edmingle_api_key_generator/RUN_GUIDE.md) |
@@ -52,7 +52,7 @@ tmux attach -t <folder>      return to the session
 
 Notes:
 - `enrollments_reports` takes **`DD-MM-YYYY`** dates (every other dataset uses `YYYY-MM-DD`).
-- `country_wise_data` Stage 2 needs a fresh `Student-Export*.csv` in `input/`; run the stages in order.
+- `country_wise_data`: Stage 2 (`merge_country_data.py`) needs a fresh `Student-Export*.csv` in `input/`; run the two stages in order.
 - `session_wise_attendance` stages must run in order; `attendance_crossvalidation.py` is a manual spot-check, not a stage.
 - `edmingle_api_key_generator` refuses to rotate while any pipeline is running (exit code 2); rotating revokes the old key at once. Flags: `--check-config`, `--verify-only`, `--force`.
 - After every rotation, update the key copy in `/home/projectdev/attendance_dataset/credentials.yaml` (the standalone attendance copy).
