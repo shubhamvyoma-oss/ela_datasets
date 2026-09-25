@@ -2,7 +2,7 @@
 
 ## 1. Overview & Purpose
 
-`attendance.py` (v1.2.0, `attendance/scripts/attendance.py`) pulls daily student attendance from Edmingle (`report_type=55`), one HTTP call per day, and produces two CSVs: a per-batch summary and a per-(batch, session) breakdown. Built to run unattended over long date ranges.
+`attendance.py` (v1.3.0, `attendance/scripts/attendance.py`) pulls daily student attendance from Edmingle (`report_type=55`), one HTTP call per day, and produces two CSVs: a per-batch summary and a per-(batch, session) breakdown. Built to run unattended over long date ranges.
 
 **Purpose:** a reliable, resumable, crash-safe attendance extraction, so no one has to babysit a multi-day backfill or a daily run.
 
@@ -10,22 +10,21 @@
 
 ```mermaid
 flowchart TD
-    A[CLI args: --from/--to/--date/--from-file/--dry-run/--retry-failed/--reset-checkpoint] --> B[load_config: config.yaml + ../../credentials.yaml + notifications.yaml]
+    A[CLI args: --from/--to/--date/--from-file/--dry-run] --> B[load_config: config.yaml + ../../credentials.yaml + notifications.yaml]
     B --> C[setup_logging: TimedRotatingFileHandler, 30-day retention]
-    C --> D[LockFile: PID-based, refuses concurrent run]
+    C --> D[acquire_lock: exclusive OS file lock, refuses a concurrent run]
     D --> E[check_disk_space]
-    E --> F{validate_on_startup?}
-    F -->|yes| G[validate_api_connection: 1 real call for yesterday]
-    F -->|no| H[build_date_list]
-    G --> H
-    H --> I[Checkpoint: skip dates already success, unless --retry-failed / --reset-checkpoint]
-    I --> J[run_pull_loop: for each remaining date]
-    J --> K[fetch_one_day: GET report/csv, report_type=55]
-    K -->|200| L[write staging/raw_DATE.csv, mark checkpoint success]
+    E --> H[build_date_list]
+    H --> J[run_pull_loop: for each date without a staging file]
+    J --> K[fetch_one_day: GET report/csv, report_type=55, via common.get_json]
+    K -->|200 with rows| L["write staging/raw_DATE.csv.part, rename to raw_DATE.csv"]
+    K -->|200, no rows| L2[touch staging/raw_DATE.empty]
     K -->|401/403/404| M[FatalAPIError -> abort run, critical email]
-    K -->|429/5xx/timeout while online| N[exponential backoff + retry, circuit breaker counts]
-    K -->|internet down| O[is_online/wait_for_connection: pause, probe, resume same date, no retry/breaker cost]
+    K -->|429/5xx/timeout, retries used up| N[date left without a file; consecutive-failure counter]
+    N -->|3 in a row| M2[circuit breaker -> abort run, critical email]
     L --> P{more dates?}
+    L2 --> P
+    N --> P
     P -->|yes| J
     P -->|no| Q["summarise_staging_files: split rows by batch into ~150 MB<br/>partition files, then one partition at a time"]
     Q --> R["per partition: clean_data: drop bad dates, dedupe, key-col check, filter_active_students"]
@@ -34,9 +33,8 @@ flowchart TD
     T --> U[build_class_summary: per batch+session aggregates, session_number, is_conducted]
     U --> V[compute_batch_summary -> batch_attendance_summary_LABEL_TIMESTAMP.csv]
     U --> W[build_session_wise_output -> session_wise_attendance_LABEL_TIMESTAMP.csv]
-    V --> X[EmailNotifier: HTML completion/critical/warning email]
+    V --> X[notify: plain-text completion/critical/warning email via common.send_mail]
     W --> X
-    X --> Y[LockFile released, checkpoint left intact]
 ```
 
 **Lineage:** Edmingle API → per-day staging CSVs → batch partitions (temporary spill files) → `clean_data()` →
@@ -50,7 +48,7 @@ automatically.
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
 | `scripts/config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
 | `../notifications.yaml` | SMTP + recipients + alert-granularity toggles (this pipeline's own folder, a sibling of `scripts/`). |
-| `output/` | Summaries, `staging/`, `logs/`, checkpoint, lock file, and a temporary `_spill/` folder while summarising (deleted afterwards). |
+| `output/` | Summaries, `staging/` (the resume state), `logs/`, the lock file, and a temporary `_spill/` folder while summarising (deleted afterwards). |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
 | `../../common.py` | Shared credentials/notifications loader — not used for this pipeline's own SMTP/rate-limit code. |
 
@@ -67,24 +65,22 @@ automatically.
 1. Parse CLI args.
 2. `load_config()` — merges `config.yaml`, shared credentials, notifications; exits on missing required keys.
 3. `setup_logging()` — daily-rotating file + console, IST timestamps.
-4. `LockFile` — PID-based; refuses a second concurrent run, auto-clears a stale (dead-PID) lock.
+4. `acquire_lock()` — an exclusive OS file lock held until the process exits (even on a crash), so a second concurrent run is refused and there is never a stale lock to clear.
 5. `check_disk_space()` — aborts if free space is below `pipeline.min_free_disk_mb`.
-6. If `validate_on_startup`, one real call for yesterday checks the API key/org id before the main loop.
-7. `build_date_list()` — resolves dates from `--date`, `--from`/`--to`, or `default_lookback_days`.
-8. Checkpoint skips already-`success` dates (unless `--retry-failed`/`--reset-checkpoint`).
-9. `run_pull_loop()` calls `fetch_one_day()` per date — handles 200/429/401/403/404/400/5xx/Edmingle 6001/6002, network-outage detection, backoff, and a consecutive-error circuit breaker.
-10. Each fetched day writes to `staging/raw_<date>.csv`; checkpoint updates immediately (crash-safe).
-11. `summarise_staging_files()` reads every staging file **once**, keeps only the columns the summary uses (plus a hash of the whole original row) and writes them into ~150 MB partition files keyed by `batch_Id`; steps 12–15 then run **once per partition** and the small results are joined. Every metric is per batch, so the output is identical to processing everything at once. (`--from-file` skips extraction and loads that one file in memory.)
-12. `clean_data()` — parses dates, dedupes, drops rows missing key columns, flags (doesn't drop) conflicting rows, filters inactive students.
-13. `resolve_session_id_column()` — `attendance_id`, falling back to `class_Id` with a warning.
-14. `validate_present_value()` — aborts the run if `"P"` never appears.
-15. `build_class_summary()` computes per-(batch, session) aggregates; `compute_batch_summary()`/`build_session_wise_output()` derive the two output CSVs.
-16. `EmailNotifier` sends completion/critical/warning email per `notifications.yaml` (never raises); the lock is released on clean exit or SIGINT/SIGTERM.
+6. `build_date_list()` — resolves dates from `--date`, `--from`/`--to`, or `default_lookback_days`.
+7. `run_pull_loop()` skips every date that already has `staging/raw_<date>.csv` (or an empty `raw_<date>.empty` marker for a day with no rows) and calls `fetch_one_day()` for the rest — handles 200/429/401/403/404/400/5xx/Edmingle 6001/6002 and backoff, and a consecutive-failure circuit breaker (`max_consecutive_errors`, default 3).
+8. Each fetched day is written to `raw_<date>.csv.part` and renamed, so a half-written file is never mistaken for a finished day; a date whose retries run out simply has no file, so re-running the same command retries exactly the missing dates.
+9. `summarise_staging_files()` reads every staging file **once**, keeps only the columns the summary uses (plus a hash of the whole original row) and writes them into ~150 MB partition files keyed by `batch_Id`; steps 10–13 then run **once per partition** and the small results are joined. Every metric is per batch, so the output is identical to processing everything at once. (`--from-file` skips extraction and loads that one file in memory.)
+10. `clean_data()` — parses dates, dedupes, drops rows missing key columns, flags (doesn't drop) conflicting rows, filters inactive students.
+11. `resolve_session_id_column()` — `attendance_id`, falling back to `class_Id` with a warning.
+12. `validate_present_value()` — aborts the run if `"P"` never appears.
+13. `build_class_summary()` computes per-(batch, session) aggregates; `compute_batch_summary()`/`build_session_wise_output()` derive the two output CSVs.
+14. `notify()` sends a plain-text completion/critical/warning email through `common.send_mail` (never raises), each switched on/off by `notifications.yaml`; SIGINT/SIGTERM log a message and exit, finished days are kept.
 
 ## 6. Function Reference
 
 - **`load_config(path)`** — merges `config.yaml` over defaults, injects credentials/notifications, validates required keys, anchors relative paths to the script's folder.
-- **`fetch_one_day(...)`** — one day through `common.get_json` (retry/backoff): `200` parsed; `429` waits `Retry-After` + 2 s (30 s if the header is absent); `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. On timeout it checks `is_online()`: if the internet is down it waits and retries the same date for free. Raises `ValueError` when retries run out.
+- **`fetch_one_day(...)`** — one day through `common.get_json` (retry/backoff): `200` parsed; `429` waits `Retry-After` + 2 s (30 s if the header is absent); `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. Network errors and timeouts back off and retry like any other transient failure (there is no separate internet-outage waiting since 2026-09-25). Raises `ValueError` when retries run out.
 - **`resolve_session_id_column(...)`** — `attendance_id`, else `class_Id` with a warning (undercounts sessions: `class_Id` is a subject id, not a session).
 - **`filter_active_students(...)`** — allow-list on `studentBatchStatus` (default `["Active"]`), togglable.
 - **`clean_data(...)`** — parses `classDate`, drops unparseable/duplicate/key-incomplete rows, logs (keeps) conflicting `(student_Id, session)` pairs, filters students, derives `_class_datetime`.
@@ -97,7 +93,7 @@ automatically.
 
 | Source | Key(s) | Purpose |
 |---|---|---|
-| CLI | `--config` (cwd-relative, not script-relative), `--date`, `--from`/`--to`, `--from-file`, `--dry-run`, `--retry-failed`, `--reset-checkpoint`, `--verbose` | Which dates, which mode. |
+| CLI | `--config` (cwd-relative, not script-relative), `--date`, `--from`/`--to`, `--from-file`, `--dry-run`, `--verbose` | Which dates, which mode. |
 | `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id` | Auth — fatal if missing. |
 | `notifications.yaml` | SMTP host/port/user/password, recipients, per-severity toggles; Slack/Teams placeholders (unimplemented) | Alerting. |
 | `config.yaml` | `api.*` (url/timeouts/retry tuning), `paths.*`, `pipeline.*` (lookback, present/absent/late values, session id column, date/time formats, active-student filtering) | Runtime behaviour. |
@@ -117,10 +113,10 @@ flag · present-value abort check · per-session→per-batch aggregation.
 | `batch_attendance_summary_<label>_<ts>.csv` | Direct `to_csv`, not atomic. |
 | `session_wise_attendance_<label>_<ts>.csv` | Only if `write_session_wise_csv` (default true, unset here). |
 | `attendance_raw_<label>_<ts>.csv` | Only if `save_combined_raw_csv` (true here) **and** there is enough free disk; otherwise skipped with a warning, since it just duplicates `staging/`. Written file by file. |
-| `staging/raw_<date>.csv` | One per fetched day; enables resume. |
-| `pipeline_checkpoint.json` | Per-date status, atomic write. |
+| `staging/raw_<date>.csv` | One per fetched day, written atomically; **this is the resume state** (a re-run skips dates that have one). |
+| `staging/raw_<date>.empty` | Empty marker for a day the API returned no rows for, so a re-run does not fetch it again. |
 
-**Confirmed state:** `output/` holds one batch summary (`batch_attendance_summary_2020-01-01_to_2026-07-30_…csv`, 290 rows) from an earlier July run, plus the logs. No session-wise file, staging files or checkpoint (the 2,260-day run of 2026-09-24 died out of memory — see below; its staging was deleted and the old checkpoint kept only as `.bak-staging-deleted-2026-09-25`).
+**Confirmed state:** `output/` holds one batch summary (`batch_attendance_summary_2020-01-01_to_2026-07-30_…csv`, 290 rows) from an earlier July run, plus the logs. No session-wise file or staging files (the 2,260-day run of 2026-09-24 died out of memory — see below; its staging was deleted). `pipeline_checkpoint.json.bak-staging-deleted-2026-09-25` is the old design's checkpoint and is no longer used.
 
 **Database integration:** not applicable — CSV output only.
 
@@ -150,8 +146,7 @@ flag · present-value abort check · per-session→per-batch aggregation.
 
 **Implemented checks:** unparseable-date drop, duplicate-row drop, missing-key-column drop,
 conflicting-row flagging (not resolved), active-student allow-list, present-value sanity abort,
-session-id fallback with warning, zero-rating handling, disk-space precheck, startup API
-validation.
+session-id fallback with warning, zero-rating handling, disk-space precheck, atomic staging files, consecutive-failure circuit breaker.
 
 **Confirmed limitations:**
 - Conflicting `(student, session)` rows are flagged but kept — can skew per-session counts.
@@ -162,7 +157,7 @@ validation.
 - `notifications.yaml` still has placeholder SMTP credentials/recipients with alerts enabled — no real email will arrive until filled in.
 - **Memory (fixed 2026-09-25).** The pipeline used to load every staging file into one DataFrame; the 2020-01-01 → 2026-08-31 run (2,260 days, ~5.6 GB, ~10M rows) died at that step on this 3.9 GB server. It now uses ~330 MB regardless of range (measured on 649k rows) but needs about **half the staging size in free disk** for temporary files (checked up front). Only a ~4-month sample has been tested end to end, so a full 2,260-day run is still unproven.
 - `cleanup_staging_after_combine` now removes staging files after the summaries are written (it used to remove them first). `clean_data()` log lines repeat once per partition on a large run, and the combined raw CSV is written file by file, so a column's number format can differ slightly (`5` vs `5.0`).
-- `EmailNotifier` uses its own HTML-email code, separate from `common.send_mail()` (plain text) — routing this pipeline through the shared function later would break the HTML formatting unless that function is extended first.
+- **Simplified 2026-09-25:** the JSON checkpoint (`--retry-failed`, `--reset-checkpoint`), the internet-outage probe/wait, the startup API validation call and the HTML mailer were removed. Consequences: a long internet outage now fails those dates (and trips the circuit breaker after 3) instead of pausing the run — re-run the same command afterwards; a dry run no longer leaves simulated rows in `staging/` (they used to be recorded as finished days).
 
 **Verification of the memory fix:** on real data (55 days, 282,887 rows, 33 batches) both summaries were **byte-identical** to the old all-in-memory code at 1, 15 and 58 partitions, with the active-student filter on and off; a planted-duplicates test also matched and was shown able to fail. A full `main()` run worked online and with `--from-file`.
 
@@ -170,7 +165,7 @@ validation.
 
 ## 10. Error Handling & Logging
 
-`TimedRotatingFileHandler` (30-day retention) + console, IST timestamps. `FatalAPIError` (401/403/404/6002, no retry) and `PipelineError` (present-value/startup failure). Exponential backoff+jitter for 429/5xx; a consecutive-error circuit breaker (`max_consecutive_errors`) stops the run; `is_online()` separates a real internet outage (free retry) from an Edmingle-side failure. SIGINT/SIGTERM release the lock. Email is best-effort and never raises.
+`TimedRotatingFileHandler` (30-day retention) + console, IST timestamps. `FatalAPIError` (401/403/404/6002, no retry) and `PipelineError` (present-value/startup failure). Exponential backoff+jitter for 429/5xx/network errors; a consecutive-failure circuit breaker (`max_consecutive_errors`) stops the run (also the protection during an outage). SIGINT/SIGTERM log and exit; the OS releases the lock. Email is best-effort and never raises.
 
 ## 11. Dependencies
 
@@ -180,7 +175,7 @@ validation.
 | `requests` | HTTP calls. |
 | `pyyaml` | Config parsing. |
 | `common` (repo root) | Credentials/notifications loading. |
-| stdlib (`argparse`, `logging`, `smtplib`, `socket`, `pathlib`, etc.) | CLI, logging, lock/PID, SMTP, timing. |
+| stdlib (`argparse`, `logging`, `fcntl`, `pathlib`, etc.) | CLI, logging, file lock, timing. |
 
 Docstring states: `pip install pandas requests pyyaml`.
 
@@ -196,8 +191,8 @@ python3 attendance.py --date 2026-06-15
 python3 attendance.py                       # uses default_lookback_days
 python3 attendance.py --from-file raw.csv   # summarize an existing raw CSV, skip extraction
 python3 attendance.py --dry-run --from 2026-01-01 --to 2026-01-07
-python3 attendance.py --retry-failed
-python3 attendance.py --reset-checkpoint
+# Retry failed days / continue after a crash: run the same command again (finished days are skipped).
+# Start over: rm -r ../output/staging
 ```
 
 **Run it in tmux** (session name = folder name; multi-year ranges take hours):
@@ -233,7 +228,7 @@ None — triggered manually. No unattended auto-restart wrapper exists (a stale 
 |---|---|---|
 | "Config file not found" on start | Wrong cwd, no `--config` passed | Run from `scripts/` or pass an absolute path |
 | "Shared credentials file not found" | `../../credentials.yaml` missing/incomplete | Verify its `edmingle:` block |
-| Refuses to start, mentions lock file | Prior run's PID still alive, or stale lock | Check `output/pipeline.lock` |
+| Refuses to start, mentions lock file | Another run holds the lock (the message shows its PID) | Check `tmux ls` / `ps`; the lock frees itself when that process ends |
 | Aborts with `PipelineError` re: `present_value` | Configured "P" marker never appeared | Check `pipeline.present_value` vs a raw API sample |
 | Repeated "falling back to class_Id" warnings | `attendance_id` missing from response | Investigate — sessions will be undercounted |
 | Circuit breaker trips | Consecutive days exhausted retries | Check Edmingle status / API key |
@@ -246,7 +241,7 @@ None — triggered manually. No unattended auto-restart wrapper exists (a stale 
 - **New/renamed status codes** → `pipeline.present_value`/`absent_value`/`late_value`; the hardcoded `E`/`OL`/`NA` codes live in `build_class_summary()` itself.
 - **Output schema change** → `OUTPUT_COLUMNS`/`SESSION_OUTPUT_COLUMNS` plus the summary-building functions.
 - **Retry/backoff tuning** → `config.yaml api.*`, no code change needed.
-- **New notification channel** → `notifications.yaml` has Slack/Teams placeholders, but `EmailNotifier` needs new send logic.
+- **New notification channel** → `notifications.yaml` has Slack/Teams placeholders, but `notify()` only sends email.
 
 ## 17. Security Considerations
 

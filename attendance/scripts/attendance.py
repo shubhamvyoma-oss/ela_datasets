@@ -1,7 +1,7 @@
 """
 attendance.py -- Edmingle report_type=55 attendance pipeline: fetches daily attendance for a date
 range, stages one CSV per day (crash-safe resume), and produces a per-batch summary CSV. Full
-behavior (checkpointing, retry/backoff, network-outage handling, email alerts, config keys) is
+behavior (resume, retry/backoff, email alerts, config keys) is
 documented in ../ATTENDANCE.md, not repeated here.
 
 USAGE
@@ -10,27 +10,22 @@ USAGE
   python attendance.py                       # config lookback
   python attendance.py --from-file raw.csv  # skip API
   python attendance.py --dry-run --from 2020-01-01 --to 2020-01-07
-  python attendance.py --retry-failed        # re-run failed dates only
-  python attendance.py --reset-checkpoint    # start fresh
+  (a re-run of the same command skips finished days and retries the rest; delete output/staging to start over)
   python attendance.py --config /other/config.yaml ...
 """
 
 import argparse
-import json
+import fcntl
 import logging
 import logging.handlers
 import os
-import platform
 import random
+import shutil
 import signal
-import smtplib
-import socket
 import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 
 # Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
@@ -47,7 +42,7 @@ import common
 
 # ── CONSTANTS ──
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 IST = timezone(timedelta(hours=5, minutes=30))
 
 OUTPUT_COLUMNS = [
@@ -89,21 +84,8 @@ _DEFAULTS = {
         "retry_backoff_max_seconds": 120,
         "retry_jitter_seconds": 1.0,
         "max_consecutive_errors": 3,
-        "validate_on_startup": True,
-        # ── Network resilience (v1.2.0) ──────────────────────────
-        # When the internet drops, pause and auto-resume instead of
-        # failing dates / tripping the circuit breaker.
-        "wait_for_reconnect": True,
-        "connectivity_check_interval_seconds": 30,
-        "connectivity_check_timeout_seconds": 5,
-        "connectivity_probe_host": "8.8.8.8",   # raw-internet probe (no DNS needed)
-        "connectivity_probe_port": 53,
-        "max_offline_wait_minutes": 0,          # 0 = wait forever
     },
     "email": {
-        "enabled": False,
-        "smtp_port": 587,
-        "smtp_timeout_seconds": 15,
         "notify_on_critical": True,
         "notify_on_warning": False,
         "notify_on_completion": True,
@@ -156,37 +138,18 @@ def load_config(config_path: str) -> dict:
     # Edmingle API key/org id are shared across every ela_datasets/ pipeline, not read from config.yaml.
     script_dir = Path(__file__).resolve().parent
     creds_path = script_dir.parent.parent / "credentials.yaml"
-    if not creds_path.exists():
-        sys.exit(f"\nShared credentials file not found: {creds_path}\n")
     edmingle = common.edmingle_settings(path=creds_path)
     cfg["api"]["key"]    = edmingle["api_key"]
     cfg["api"]["org_id"] = edmingle["organization_id"]
     cfg["api"].setdefault("url", f"{edmingle['base_url']}/report/csv")
 
     # Per-pipeline notification config, in this pipeline's own folder.
-    notif_path = common.REPO_ROOT / "attendance" / "notifications.yaml"
-    if not notif_path.exists():
-        sys.exit(f"\nNotifications file not found: {notif_path}\n")
-    notif_cfg = common.load_notifications("attendance")
-    email_channel = ((notif_cfg.get("channels", {}) or {}).get("email", {})) or {}
-    smtp = email_channel.get("smtp", {}) or {}
-    cfg["email"]["enabled"]              = email_channel.get(
-        "enabled", cfg["email"].get("enabled", False))
-    cfg["email"]["smtp_host"]            = smtp.get("host")
-    cfg["email"]["smtp_port"]            = smtp.get(
-        "port", cfg["email"].get("smtp_port", 587))
-    cfg["email"]["smtp_user"]            = smtp.get("username")
-    cfg["email"]["smtp_password"]        = smtp.get("app_password")
-    cfg["email"]["from_address"]         = smtp.get("from_address")
-    cfg["email"]["smtp_timeout_seconds"] = smtp.get(
-        "timeout_seconds", cfg["email"].get("smtp_timeout_seconds", 15))
-    cfg["email"]["to_addresses"]         = email_channel.get("to_addresses", [])
-    cfg["email"]["notify_on_critical"]   = email_channel.get(
-        "notify_on_critical", cfg["email"].get("notify_on_critical", True))
-    cfg["email"]["notify_on_warning"]    = email_channel.get(
-        "notify_on_warning", cfg["email"].get("notify_on_warning", False))
-    cfg["email"]["notify_on_completion"] = email_channel.get(
-        "notify_on_completion", cfg["email"].get("notify_on_completion", True))
+    if not (common.REPO_ROOT / "attendance" / "notifications.yaml").exists():
+        sys.exit(f"\nNotifications file not found: {common.REPO_ROOT / 'attendance' / 'notifications.yaml'}\n")
+    cfg["_notifications"] = common.load_notifications("attendance")  # common.send_mail reads the SMTP block
+    email_channel = (cfg["_notifications"].get("channels") or {}).get("email") or {}
+    for key in ("notify_on_critical", "notify_on_warning", "notify_on_completion"):
+        cfg["email"][key] = email_channel.get(key, cfg["email"][key])
 
     required = [("paths", "output_folder"), ("paths", "log_folder")]
     missing = [f"{a}.{b}" for a, b in required
@@ -201,16 +164,14 @@ def load_config(config_path: str) -> dict:
 
     # Anchor relative paths to this script's folder, not the caller's cwd (matters under cron).
     # Absolute paths are left untouched.
-    for _key in ("output_folder", "log_folder", "staging_folder",
-                 "checkpoint_file", "lock_file"):
+    for _key in ("output_folder", "log_folder", "staging_folder", "lock_file"):
         _val = cfg["paths"].get(_key)
         if _val and not Path(_val).is_absolute():
             cfg["paths"][_key] = str((script_dir / _val).resolve())
 
     out = Path(cfg["paths"]["output_folder"])
-    cfg["paths"].setdefault("staging_folder",  str(out / "staging"))
-    cfg["paths"].setdefault("checkpoint_file", str(out / "pipeline_checkpoint.json"))
-    cfg["paths"].setdefault("lock_file",        str(out / "pipeline.lock"))
+    cfg["paths"].setdefault("staging_folder", str(out / "staging"))
+    cfg["paths"].setdefault("lock_file",      str(out / "pipeline.lock"))
 
     return cfg
 
@@ -246,179 +207,34 @@ def setup_logging(cfg: dict, verbose: bool = False) -> logging.Logger:
 
 # ── LOCK FILE ──
 
-class LockFile:
-    def __init__(self, path: str, log: logging.Logger):
-        self.path = Path(path)
-        self.log  = log
-
-    def acquire(self):
-        if self.path.exists():
-            try:
-                pid = int(self.path.read_text().strip())
-                if self._pid_running(pid):
-                    raise PipelineError(
-                        f"Another instance already running (PID {pid}). "
-                        f"Lock: {self.path}. "
-                        f"If that process is dead, delete the lock file and re-run."
-                    )
-                self.log.warning(f"Stale lock (PID {pid} not running). Removing.")
-                self.path.unlink()
-            except ValueError:
-                self.log.warning("Unreadable lock file. Removing.")
-                self.path.unlink()
-        self.path.write_text(str(os.getpid()))
-        self.log.debug(f"Lock acquired (PID {os.getpid()})")
-
-    def release(self):
-        if self.path.exists():
-            self.path.unlink()
-            self.log.debug("Lock released.")
-
-    @staticmethod
-    def _pid_running(pid: int) -> bool:
-        try:
-            if platform.system() == "Windows":
-                import ctypes
-                handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
-                if handle:
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                    return True
-                return False
-            else:
-                os.kill(pid, 0)
-                return True
-        except (OSError, PermissionError):
-            return False
-
-
-# ── CHECKPOINT ──
-
-class Checkpoint:
-    SUCCESS = "success"
-    FAILED  = "failed"
-    SKIPPED = "skipped"
-
-    def __init__(self, path: str, log: logging.Logger):
-        self.path  = Path(path)
-        self.log   = log
-        self._data = {}
-
-    def load(self):
-        if self.path.exists():
-            try:
-                with open(self.path, encoding="utf-8") as f:
-                    self._data = json.load(f)
-                done = sum(1 for v in self._data.get("dates", {}).values()
-                           if v["status"] == self.SUCCESS)
-                self.log.info(f"Checkpoint loaded: {done} date(s) already done.")
-            except (json.JSONDecodeError, KeyError) as e:
-                self.log.warning(f"Checkpoint corrupt ({e}). Starting fresh.")
-                self._data = {}
-        else:
-            self.log.info("No checkpoint found. Fresh run.")
-        self._data.setdefault("dates", {})
-        self._data.setdefault("version", VERSION)
-
-    def reset(self):
-        self._data = {"dates": {}, "version": VERSION}
-        self._save()
-        self.log.info("Checkpoint reset.")
-
-    def is_done(self, date_str: str) -> bool:
-        return self._data["dates"].get(date_str, {}).get("status") == self.SUCCESS
-
-    def is_failed(self, date_str: str) -> bool:
-        return self._data["dates"].get(date_str, {}).get("status") == self.FAILED
-
-    def mark(self, date_str: str, status: str, **extra):
-        self._data["dates"][date_str] = {
-            "status": status,
-            "updated_at": datetime.now(IST).isoformat(),
-            **extra,
-        }
-        self._save()
-
-    def failed_dates(self) -> list:
-        return [d for d, v in self._data["dates"].items()
-                if v["status"] == self.FAILED]
-
-    def _save(self):
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, default=str)
-        tmp.replace(self.path)
+def acquire_lock(path: str, log: logging.Logger):
+    """Hold an exclusive lock on the lock file for the life of the process. The OS releases it when the
+    process exits, even on a crash, so there is never a stale lock to clean up. Keep the returned handle."""
+    handle = open(path, "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        raise PipelineError(f"Another instance already running (PID {handle.read().strip() or '?'}). Lock: {path}.") from None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    log.debug(f"Lock acquired (PID {os.getpid()})")
+    return handle
 
 
 # ── EMAIL ──
 
-class EmailNotifier:
-    """HTML email alerts. Never raises -- email failure never crashes the pipeline."""
+_SUBJECT_TAGS = {"critical": "CRITICAL", "warning": "WARNING", "completion": "SUCCESS"}
 
-    def __init__(self, cfg: dict, log: logging.Logger):
-        self.cfg     = cfg["email"]
-        self.log     = log
-        self.enabled = self.cfg.get("enabled", False)
 
-    def _send(self, subject: str, body_html: str):
-        if not self.enabled:
-            return
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["From"]    = self.cfg["from_address"]
-            msg["To"]      = ", ".join(self.cfg["to_addresses"])
-            msg["Subject"] = subject
-            msg.attach(MIMEText(body_html, "html"))
-            with smtplib.SMTP(
-                self.cfg["smtp_host"], self.cfg["smtp_port"],
-                timeout=self.cfg.get("smtp_timeout_seconds", 15),
-            ) as srv:
-                srv.ehlo()
-                srv.starttls()
-                srv.login(self.cfg["smtp_user"], self.cfg["smtp_password"])
-                srv.sendmail(self.cfg["from_address"],
-                             self.cfg["to_addresses"], msg.as_string())
-            self.log.info(f"Email sent: {subject}")
-        except Exception as e:
-            self.log.error(f"Email failed (pipeline continues): {e}")
-
-    @staticmethod
-    def _html(title: str, color: str, rows: list) -> str:
-        rows_html = "".join(
-            f"<tr>"
-            f"<td style='padding:4px 12px;border:1px solid #ddd'><b>{k}</b></td>"
-            f"<td style='padding:4px 12px;border:1px solid #ddd'>{v}</td>"
-            f"</tr>"
-            for k, v in rows
-        )
-        return (
-            f"<html><body style='font-family:Arial,sans-serif;color:#333'>"
-            f"<h2 style='background:{color};color:#fff;padding:10px 16px;"
-            f"border-radius:4px'>{title}</h2>"
-            f"<table style='border-collapse:collapse;font-size:14px'>{rows_html}</table>"
-            f"<p style='color:#888;font-size:12px;margin-top:20px'>"
-            f"Edmingle Attendance Pipeline v{VERSION}</p>"
-            f"</body></html>"
-        )
-
-    def send_critical(self, error: str, context: dict):
-        if not self.cfg.get("notify_on_critical", True):
-            return
-        body = self._html("CRITICAL Error", "#c0392b",
-                          [("Error", error), *context.items()])
-        self._send(f"[CRITICAL] Edmingle Pipeline -- {error[:80]}", body)
-
-    def send_warning(self, message: str, context: dict):
-        if not self.cfg.get("notify_on_warning", False):
-            return
-        body = self._html("Pipeline Warning", "#e67e22",
-                          [("Warning", message), *context.items()])
-        self._send(f"[WARNING] Edmingle Pipeline -- {message[:80]}", body)
-
-    def send_completion(self, stats: dict):
-        if not self.cfg.get("notify_on_completion", True):
-            return
-        body = self._html("Pipeline Completed", "#27ae60", list(stats.items()))
-        self._send("[SUCCESS] Edmingle Pipeline -- Run Complete", body)
+def notify(cfg: dict, kind: str, subject: str, details: dict, log: logging.Logger) -> None:
+    """Plain-text email through common.send_mail (never raises). `kind` is critical / warning / completion;
+    notifications.yaml switches each on or off (notify_on_<kind>)."""
+    if cfg["email"][f"notify_on_{kind}"]:
+        body = "\n".join(f"{key}: {value}" for key, value in details.items())
+        common.send_mail(cfg["_notifications"], f"[{_SUBJECT_TAGS[kind]}] Edmingle Pipeline -- {subject[:80]}", body, log)
 
 
 # ── DISK SPACE CHECK ──
@@ -427,103 +243,13 @@ def check_disk_space(cfg: dict, log: logging.Logger):
     required_mb = cfg["pipeline"]["min_free_disk_mb"]
     folder      = cfg["paths"]["output_folder"]
     Path(folder).mkdir(parents=True, exist_ok=True)
-    try:
-        import shutil
-        free_mb = shutil.disk_usage(folder).free / (1024 ** 2)
-        log.info(f"Free disk space: {free_mb:,.0f} MB (required: {required_mb} MB)")
-        if free_mb < required_mb:
-            raise PipelineError(
-                f"Insufficient disk space: {free_mb:.0f} MB free, "
-                f"{required_mb} MB required in {folder}."
-            )
-    except PipelineError:
-        raise
-    except Exception as e:
-        log.warning(f"Disk space check skipped ({e}). Continuing.")
+    free_mb = shutil.disk_usage(folder).free / (1024 ** 2)
+    log.info(f"Free disk space: {free_mb:,.0f} MB (required: {required_mb} MB)")
+    if free_mb < required_mb:
+        raise PipelineError(f"Insufficient disk space: {free_mb:.0f} MB free, {required_mb} MB required in {folder}.")
 
 
 # ── API LAYER ──
-
-def build_api_session() -> requests.Session:
-    return requests.Session()
-
-
-# ── Network connectivity (v1.2.0) ────────────────────────────────────
-
-def _api_host(cfg: dict) -> str:
-    from urllib.parse import urlparse
-    return urlparse(cfg["api"]["url"]).hostname or "vyoma-api.edmingle.com"
-
-
-def is_online(cfg: dict) -> bool:
-    """
-    True only if BOTH pass:
-      1. Raw TCP connect to probe host (8.8.8.8:53) -- proves internet
-         is up without needing DNS.
-      2. DNS resolution of the API host -- proves we can actually
-         reach Edmingle (your outage was a DNS failure: Errno 11001).
-    """
-    api_cfg = cfg["api"]
-    timeout = api_cfg.get("connectivity_check_timeout_seconds", 5)
-    try:
-        with socket.create_connection(
-            (api_cfg.get("connectivity_probe_host", "8.8.8.8"),
-             api_cfg.get("connectivity_probe_port", 53)),
-            timeout=timeout,
-        ):
-            pass
-        socket.getaddrinfo(_api_host(cfg), 443)
-        return True
-    except OSError:
-        return False
-
-
-def wait_for_connection(cfg: dict, log: logging.Logger, context: str = ""):
-    """
-    Block until the internet is back. Logs progress, never consumes
-    retry attempts. Respects api.max_offline_wait_minutes (0 = forever).
-    Raises PipelineError only if the cap is exceeded.
-    SIGINT/SIGTERM still work during the wait (checkpoint is safe).
-    """
-    api_cfg   = cfg["api"]
-    interval  = api_cfg.get("connectivity_check_interval_seconds", 30)
-    max_min   = api_cfg.get("max_offline_wait_minutes", 0)
-    started   = time.monotonic()
-    checks    = 0
-
-    log.warning(
-        f"NETWORK DOWN{' at ' + context if context else ''}. "
-        f"Pausing pipeline -- probing every {interval}s until reconnected. "
-        f"(Checkpoint is safe; Ctrl+C anytime to stop and resume later.)"
-    )
-
-    while True:
-        if is_online(cfg):
-            offline_s = time.monotonic() - started
-            log.info(
-                f"NETWORK RESTORED after {offline_s/60:.1f} min "
-                f"({checks} probe(s)). Resuming{' ' + context if context else ''}."
-            )
-            time.sleep(2)  # small settle time after reconnect
-            return
-
-        checks += 1
-        elapsed_min = (time.monotonic() - started) / 60
-        # Log every probe for the first 5, then every 10th (avoid log spam
-        # during an overnight outage).
-        if checks <= 5 or checks % 10 == 0:
-            log.info(
-                f"  Still offline ({elapsed_min:.1f} min, probe #{checks}). "
-                f"Next check in {interval}s."
-            )
-        if max_min and elapsed_min >= max_min:
-            raise PipelineError(
-                f"Offline for {elapsed_min:.0f} min, exceeding "
-                f"api.max_offline_wait_minutes={max_min}. Stopping "
-                f"(checkpoint saved -- re-run to resume)."
-            )
-        time.sleep(interval)
-
 
 def _day_params(date_str: str, cfg: dict) -> dict:
     day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=IST)
@@ -571,14 +297,6 @@ def fetch_one_day(
 
     api_cfg = cfg["api"]
 
-    def internet_down(_exc) -> bool:
-        # A real outage is not this date's fault: wait for the connection, then retry the same date
-        # without using up an attempt.
-        if api_cfg.get("wait_for_reconnect", True) and not is_online(cfg):
-            wait_for_connection(cfg, log, context=f"[{date_str}]")
-            return True
-        return False
-
     def usable(data) -> bool:  # rows, or an Edmingle 6001/6002 code handled below
         return isinstance(data, dict) and (
             "data" in data or str(data.get("error_code") or data.get("code") or "") in ("6001", "6002"))
@@ -590,7 +308,7 @@ def fetch_one_day(
             attempts=api_cfg["max_retries"], delay=api_cfg["retry_backoff_base_seconds"],
             max_delay=api_cfg["retry_backoff_max_seconds"], jitter=api_cfg["retry_jitter_seconds"],
             block_seconds=lambda r: common.retry_after(r) + 2 if r.headers.get("Retry-After") else 30,
-            validate=usable, on_network_error=internet_down, label=f"  [{date_str}]", logger=log,
+            validate=usable, label=f"  [{date_str}]", logger=log,
         )
     except common.PermanentAPIError as e:
         if e.status == 400:  # bad params for this date: skip it, don't retry
@@ -622,20 +340,6 @@ def fetch_one_day(
     return df
 
 
-def validate_api_connection(session: requests.Session, cfg: dict, log: logging.Logger):
-    log.info("Validating API connection before main loop...")
-    yesterday = (datetime.now(IST) - timedelta(days=1)).strftime("%Y-%m-%d")
-    try:
-        result = fetch_one_day(yesterday, session, cfg, log, dry_run=False)
-        log.info(
-            f"API validation OK -- "
-            f"{'0 rows' if result.empty else f'{len(result):,} rows'} "
-            f"for {yesterday}."
-        )
-    except FatalAPIError as e:
-        raise PipelineError(f"API validation failed: {e}")
-
-
 # ── DATE HELPERS ──
 
 def build_date_list(args, cfg: dict) -> list:
@@ -661,23 +365,18 @@ def build_date_list(args, cfg: dict) -> list:
 
 # ── PULL ORCHESTRATION ──
 
-def run_pull_loop(
-    dates: list,
-    session: requests.Session,
-    cfg: dict,
-    checkpoint: Checkpoint,
-    emailer: EmailNotifier,
-    log: logging.Logger,
-    dry_run: bool,
-) -> list:
-    staging_dir    = Path(cfg["paths"]["staging_folder"])
+def run_pull_loop(dates: list, session: requests.Session, cfg: dict, log: logging.Logger, dry_run: bool) -> list:
+    """Fetch every date that has no staging file yet and return the staging files (old and new).
+    A staging file `raw_<date>.csv` is written atomically and doubles as the resume marker; an empty
+    `raw_<date>.empty` marks a day the API returned no rows for. A date that fails is simply left without
+    a file, so re-running the same command retries exactly the missing dates."""
+    staging_dir = Path(cfg["paths"]["staging_folder"])
     staging_dir.mkdir(parents=True, exist_ok=True)
-    sleep_s        = cfg["api"]["rate_limit_sleep_seconds"]
-    max_consec     = cfg["api"]["max_consecutive_errors"]
+    sleep_s     = cfg["api"]["rate_limit_sleep_seconds"]
+    max_consec  = cfg["api"]["max_consecutive_errors"]
 
-    consecutive = 0
-    n_ok = n_fail = n_skip = n_resumed = 0
-    successful_files = []
+    consecutive = n_ok = n_fail = n_quiet = n_resumed = 0
+    staging_files = []
 
     log.info(
         f"{'[DRY RUN] ' if dry_run else ''}"
@@ -685,100 +384,71 @@ def run_pull_loop(
     )
 
     for i, date_str in enumerate(dates, start=1):
-
-        # ── Already done (checkpoint) ────────────────────────────────────
-        if checkpoint.is_done(date_str):
-            staging_file = staging_dir / f"raw_{date_str}.csv"
-            if staging_file.exists():
-                successful_files.append(str(staging_file))
-                n_resumed += 1
-                log.debug(f"  [{date_str}] Checkpoint done. Skipping.")
-            else:
-                # File missing but checkpoint says done -- re-fetch
-                log.warning(
-                    f"  [{date_str}] Checkpoint says done but staging file missing. "
-                    f"Re-fetching."
-                )
-                checkpoint.mark(date_str, "pending")
+        staged = staging_dir / f"raw_{date_str}.csv"
+        quiet  = staging_dir / f"raw_{date_str}.empty"
+        if staged.exists() or quiet.exists():
+            if staged.exists():
+                staging_files.append(str(staged))
+            n_resumed += 1
             continue
 
-        # ── Progress every 25 dates ──────────────────────────────────────
         if (i - 1) % 25 == 0:
-            pct = (i - 1) / len(dates) * 100
             log.info(
-                f"Progress: {i-1}/{len(dates)} ({pct:.0f}%)  "
-                f"ok={n_ok} fail={n_fail} skip={n_skip} resumed={n_resumed}"
+                f"Progress: {i-1}/{len(dates)} ({(i-1) / len(dates) * 100:.0f}%)  "
+                f"ok={n_ok} fail={n_fail} quiet={n_quiet} resumed={n_resumed}"
             )
 
-        # ── Fetch ────────────────────────────────────────────────────────
         try:
             df = fetch_one_day(date_str, session, cfg, log, dry_run=dry_run)
 
         except FatalAPIError as e:
             log.critical(f"Fatal API error: {e}. Run aborted.")
-            emailer.send_critical(str(e), {
+            notify(cfg, "critical", str(e), {
+                "Error":    str(e),
                 "Date":     date_str,
                 "Progress": f"{i-1}/{len(dates)} dates completed",
-                "Action":   "Fix config.yaml and re-run (checkpoint is saved, run will resume).",
-            })
+                "Action":   "Fix config.yaml / credentials.yaml and re-run (finished days are kept; the run will resume).",
+            }, log)
             raise PipelineError(f"Fatal API error: {e}")
 
         except ValueError:
-            # All retries exhausted
+            # All retries exhausted for this date
             consecutive += 1
             n_fail      += 1
-            checkpoint.mark(date_str, Checkpoint.FAILED, error="All retries exhausted")
-            log.error(
-                f"  [{date_str}] Failed. Consecutive failures: "
-                f"{consecutive}/{max_consec}."
-            )
-            emailer.send_warning(f"Date {date_str} failed after all retries", {
+            log.error(f"  [{date_str}] Failed. Consecutive failures: {consecutive}/{max_consec}.")
+            notify(cfg, "warning", f"Date {date_str} failed after all retries", {
                 "Consecutive failures": str(consecutive),
                 "Max allowed":          str(max_consec),
-            })
+            }, log)
             if consecutive >= max_consec:
-                msg = (
-                    f"Circuit breaker: {consecutive} consecutive failures at {date_str}. "
-                    f"Stopping pull."
-                )
+                msg = f"Circuit breaker: {consecutive} consecutive failures at {date_str}. Stopping pull."
                 log.critical(msg)
-                emailer.send_critical(msg, {
+                notify(cfg, "critical", msg, {
+                    "Error":            msg,
                     "Last failed date": date_str,
                     "Progress":         f"{i-1}/{len(dates)} dates",
-                    "Action":           "Fix the issue and re-run (checkpoint is saved).",
-                })
+                    "Action":           "Fix the issue and re-run (finished days are kept).",
+                }, log)
                 raise PipelineError(msg)
-
             if i < len(dates):
                 time.sleep(sleep_s)
             continue
 
-        # ── 0-row response (valid quiet day) ─────────────────────────────
+        consecutive = 0  # a valid API response resets the consecutive-failure counter
         if df.empty:
-            consecutive = 0   # a valid API response resets the consecutive counter
-            n_skip     += 1
-            checkpoint.mark(date_str, Checkpoint.SKIPPED, rows=0)
-            if i < len(dates):
-                time.sleep(sleep_s)
-            continue
-
-        # ── Save staging CSV ──────────────────────────────────────────────
-        consecutive      = 0
-        staging_file     = staging_dir / f"raw_{date_str}.csv"
-        df.to_csv(staging_file, index=False, encoding="utf-8-sig")
-        checkpoint.mark(date_str, Checkpoint.SUCCESS,
-                        rows=len(df), file=str(staging_file))
-        successful_files.append(str(staging_file))
-        n_ok += 1
-
+            quiet.touch()
+            n_quiet += 1
+        else:
+            part = staged.with_name(staged.name + ".part")
+            df.to_csv(part, index=False, encoding="utf-8-sig")
+            os.replace(part, staged)  # atomic: a half-written file is never mistaken for a finished day
+            staging_files.append(str(staged))
+            n_ok += 1
         if i < len(dates):
             time.sleep(sleep_s)
 
-    log.info(
-        f"Pull loop done -- ok={n_ok} fail={n_fail} skip={n_skip} "
-        f"resumed={n_resumed} | total={len(dates)}"
-    )
-    return successful_files
+    log.info(f"Pull loop done -- ok={n_ok} fail={n_fail} quiet={n_quiet} resumed={n_resumed} | total={len(dates)}")
+    return staging_files
 
 
 # ── SUMMARISE STAGING FILES (memory-bounded) ──
@@ -1180,24 +850,18 @@ def build_session_wise_output(df: pd.DataFrame, session_col: str, cfg: dict) -> 
 # ── MAIN ──
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Production-grade Edmingle report_type=55 attendance pipeline"
-    )
-    parser.add_argument("--config",           default="config.yaml")
-    parser.add_argument("--date",             type=str)
-    parser.add_argument("--from",             dest="from_date", type=str)
-    parser.add_argument("--to",               dest="to_date",   type=str)
-    parser.add_argument("--from-file",        dest="from_file", type=str)
-    parser.add_argument("--dry-run",          action="store_true")
-    parser.add_argument("--retry-failed",     action="store_true")
-    parser.add_argument("--reset-checkpoint", action="store_true")
-    parser.add_argument("--verbose",          action="store_true")
+    parser = argparse.ArgumentParser(description="Edmingle report_type=55 attendance pipeline")
+    parser.add_argument("--config",    default="config.yaml")
+    parser.add_argument("--date",      type=str)
+    parser.add_argument("--from",      dest="from_date", type=str)
+    parser.add_argument("--to",        dest="to_date",   type=str)
+    parser.add_argument("--from-file", dest="from_file", type=str)
+    parser.add_argument("--dry-run",   action="store_true")
+    parser.add_argument("--verbose",   action="store_true")
     args = parser.parse_args()
 
-    cfg     = load_config(args.config)
-    log     = setup_logging(cfg, verbose=args.verbose)
-    emailer = EmailNotifier(cfg, log)
-    lock    = LockFile(cfg["paths"]["lock_file"], log)
+    cfg = load_config(args.config)
+    log = setup_logging(cfg, verbose=args.verbose)
 
     log.info("=" * 60)
     log.info(f"Edmingle Attendance Pipeline v{VERSION}")
@@ -1212,30 +876,21 @@ def main():
     log.info("=" * 60)
 
     try:
-        lock.acquire()
+        lock = acquire_lock(cfg["paths"]["lock_file"], log)  # held until the process exits
     except PipelineError as e:
         log.critical(str(e))
         sys.exit(1)
 
     def _graceful_exit(sig, _frame):
-        log.warning(
-            f"Received {signal.Signals(sig).name}. "
-            f"Checkpoint saved -- re-run to resume."
-        )
-        lock.release()
+        log.warning(f"Received {signal.Signals(sig).name}. Finished days are kept -- re-run to resume.")
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _graceful_exit)
     signal.signal(signal.SIGTERM, _graceful_exit)
 
-    chk = Checkpoint(cfg["paths"]["checkpoint_file"], log)
-    if args.reset_checkpoint:
-        chk.reset()
-    else:
-        chk.load()
-
     run_start = datetime.now(IST)
     exit_code = 0
+    dry_dir   = None  # where a dry run stages its simulated rows (removed at the end)
 
     try:
         Path(cfg["paths"]["output_folder"]).mkdir(parents=True, exist_ok=True)
@@ -1253,44 +908,15 @@ def main():
         # ── Online mode ──────────────────────────────────────────────────
         else:
             check_disk_space(cfg, log)
-            session = build_api_session()
-
-            # If launched while offline (e.g. auto-started at boot before
-            # WiFi connects), wait for internet instead of failing.
-            if (not args.dry_run
-                    and cfg["api"].get("wait_for_reconnect", True)
-                    and not is_online(cfg)):
-                wait_for_connection(cfg, log, context="startup")
-
-            if not args.dry_run and cfg["api"].get("validate_on_startup", True):
-                try:
-                    validate_api_connection(session, cfg, log)
-                except PipelineError as e:
-                    log.critical(str(e))
-                    emailer.send_critical(str(e), {"Stage": "Startup API validation"})
-                    lock.release()
-                    sys.exit(1)
-
-            if args.retry_failed:
-                dates = chk.failed_dates()
-                if not dates:
-                    log.info("No failed dates in checkpoint. Nothing to retry.")
-                    lock.release()
-                    sys.exit(0)
-                log.info(f"--retry-failed: {len(dates)} date(s) to retry.")
-                for d in dates:
-                    chk.mark(d, "pending")
-            else:
-                dates = build_date_list(args, cfg)
-
+            dates = build_date_list(args, cfg)
             label = dates[0] if len(dates) == 1 else f"{dates[0]}_to_{dates[-1]}"
+            if args.dry_run:  # simulated rows must never be mistaken for real staging files later
+                dry_dir = Path(cfg["paths"]["staging_folder"]) / "_dry_run"
+                cfg["paths"]["staging_folder"] = str(dry_dir)
 
-            staging_files = run_pull_loop(
-                dates, session, cfg, chk, emailer, log, dry_run=args.dry_run
-            )
+            staging_files = run_pull_loop(dates, requests.Session(), cfg, log, dry_run=args.dry_run)
             if not staging_files:
                 log.warning("No data fetched for any date. Nothing to summarise.")
-                lock.release()
                 sys.exit(0)
 
             log.info("Running batch attendance summary...")
@@ -1342,27 +968,30 @@ def main():
         for k, v in stats.items():
             log.info(f"  {k}: {v}")
 
-        emailer.send_completion(stats)
+        notify(cfg, "completion", "Run Complete", stats, log)
         log.info("Pipeline complete.")
 
     except PipelineError as e:
         log.critical(f"Pipeline error: {e}")
-        emailer.send_critical(str(e), {
-            "Elapsed": f"{(datetime.now(IST) - run_start).total_seconds() / 60:.1f} min"
-        })
+        notify(cfg, "critical", str(e), {
+            "Error":   str(e),
+            "Elapsed": f"{(datetime.now(IST) - run_start).total_seconds() / 60:.1f} min",
+        }, log)
         exit_code = 1
 
     except Exception as e:
         tb = traceback.format_exc()
         log.critical(f"Unexpected error: {e}\n{tb}")
-        emailer.send_critical(f"Unexpected error: {e}", {
-            "Traceback": f"<pre style='font-size:12px'>{tb[:2000]}</pre>",
+        notify(cfg, "critical", f"Unexpected error: {e}", {
+            "Error":     f"Unexpected error: {e}",
+            "Traceback": tb[:2000],
             "Elapsed":   f"{(datetime.now(IST) - run_start).total_seconds() / 60:.1f} min",
-        })
+        }, log)
         exit_code = 1
 
     finally:
-        lock.release()
+        if dry_dir:
+            shutil.rmtree(dry_dir, ignore_errors=True)
 
     sys.exit(exit_code)
 

@@ -30,13 +30,9 @@ api:
   retry_backoff_max_seconds: 120    # never back off longer than 2 minutes
   retry_jitter_seconds: 1.0         # random jitter added to backoff (avoids thundering herd)
 
-  # Stop the entire run if this many consecutive dates all fail.
-  # Protects against hammering a completely broken endpoint.
+  # Stop the entire run if this many consecutive dates all fail (a long outage, a bad key, a broken endpoint).
+  # Finished days are kept, so re-running the same command continues from the failed date.
   max_consecutive_errors: 3
-
-  # One lightweight validation call is made before the main loop starts.
-  # This catches bad API keys, wrong ORGID, or network issues up front.
-  validate_on_startup: true
 
 
 # ── FILE PATHS ───────────────────────────────────────────────
@@ -53,14 +49,10 @@ paths:
   # Log files rotate daily; 30 days are retained.
   log_folder: "../output/logs"
 
-  # Per-day staging CSVs (one file per successfully fetched date).
-  # This is what makes the run resumable after a crash or Ctrl+C.
-  # Defaults to {output_folder}/staging if not set.
+  # Per-day staging CSVs (one file per fetched date; an empty raw_<date>.empty marks a day with no rows).
+  # These files ARE the resume state: a re-run skips every date that already has one, and retries the rest.
+  # Delete the folder to start over. Defaults to {output_folder}/staging if not set.
   # staging_folder: "./staging"
-
-  # Checkpoint JSON: tracks per-date success/failure across runs.
-  # Defaults to {output_folder}/pipeline_checkpoint.json
-  # checkpoint_file: "./pipeline_checkpoint.json"
 
   # Lock file: prevents two runs from executing simultaneously.
   # Defaults to {output_folder}/pipeline.lock

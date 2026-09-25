@@ -24,8 +24,8 @@ Finished with `Pipeline complete.` in the log.
 - New `output/batch_attendance_summary_*.csv` and `output/session_wise_attendance_*.csv`; no `ERROR` in `output/logs/pipeline.log`.
 
 ## If it stops
-Re-run the same command (finished days are skipped). `--retry-failed` redoes failed days; `--reset-checkpoint` starts over.
-"Another instance already running" → check `tmux ls`; if none, delete `output/pipeline.lock`.
+Re-run the same command: finished days (files in `output/staging/`) are skipped, failed days are retried. To start over, delete `output/staging/`. After a long internet outage the pull stops after 3 failed days in a row — just re-run.
+"Another instance already running" → check `tmux ls`; the lock frees itself when that run ends.
 
 ## tmux (use for any long range)
 ```

@@ -56,4 +56,4 @@ Notes:
 - `session_wise_attendance` stages must run in order; `attendance_crossvalidation.py` is a manual spot-check, not a stage.
 - `edmingle_api_key_generator` refuses to rotate while any pipeline is running (exit code 2); rotating revokes the old key at once. Flags: `--check-config`, `--verify-only`, `--force`.
 - After every rotation, update the key copy in `/home/projectdev/attendance_dataset/credentials.yaml` (the standalone attendance copy).
-- Long runs resume: re-run the same command after a crash and it continues from its checkpoint (`enrollments_reports` skips the 30-day chunks it already downloaded).
+- Long runs resume: re-run the same command after a crash and it continues where it left off (`attendance` skips the days already in `output/staging/`, `enrollments_reports` the 30-day chunks it already downloaded).
