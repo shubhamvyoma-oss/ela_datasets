@@ -2,16 +2,9 @@
 
 ## 1. Overview & Purpose
 
-**A utility, not a data-producing pipeline.** It logs into Edmingle with a real tutor
-username/password, obtains a fresh API key, writes it into the shared `credentials.yaml`, and
-emails a notification. Every other `ela_datasets` pipeline only **reads** `edmingle.api_key`;
-this is the only script that **writes** it. Because it rewrites a credential every other pipeline
-depends on, it **refuses to run while any other pipeline is running** and **checks the new key
-works before emailing it**. It runs by itself on the 25th of every month at 09:00 IST (Section 13)
-and can also be run by hand.
+**A utility, not a data-producing pipeline.** It logs into Edmingle with a tutor username/password, obtains a fresh API key, writes it into the shared `credentials.yaml`, and emails a notification. Every other `ela_datasets` pipeline only **reads** `edmingle.api_key`; this is the only script that **writes** it. Because of that it **refuses to run while any other pipeline is running** and **checks the new key works before emailing it**. It runs by itself on the 25th of every month at 09:00 IST (Section 13) and can also be run by hand.
 
-**Purpose:** rotate the shared Edmingle API key without ever printing, logging, or persisting the
-raw key anywhere except the `credentials.yaml` write and the notification email body.
+**Purpose:** rotate the shared Edmingle API key without printing, logging or persisting the raw key anywhere except the `credentials.yaml` write and the notification email body.
 
 ## 2. High-Level Data Flow
 
@@ -66,43 +59,20 @@ flowchart TD
 
 ## 5. Extraction Process
 
-`validate_settings()` fails fast (no network call) if the login URL isn't HTTPS, the timeout
-isn't positive, or email sender/recipients are unconfigured. `--check-config` exits here with no
-network/file/email activity. `read_credentials()` reads the tutor username/password (interactive
-prompt via `getpass` if blank); the Gmail app password is read similarly. `generate_api_key()`
-makes exactly one multipart POST; a `429` or any non-2xx status is immediately terminal, no
-retry. `extract_api_key()` requires `code==200` and a 16–256 character, whitespace-free key.
-`update_shared_api_key()` rewrites the `api_key` line via regex — done **before** the email,
-since the rotation itself is the operationally important step. `send_api_key_email()` then sends
-a plaintext notification. If the write succeeds but the email fails, stderr explicitly says the
-credential was already rotated.
+1. `validate_settings()` fails fast (no network) if the login URL isn't HTTPS, the timeout isn't positive, or email sender/recipients are missing. `--check-config` stops here.
+2. `read_credentials()` reads the tutor username/password (prompts via `getpass` if blank).
+3. `generate_api_key()` makes exactly one multipart POST; a `429` or any non-2xx status is terminal, no retry.
+4. `extract_api_key()` requires `code==200` and a 16–256 character, whitespace-free key.
+5. `update_shared_api_key()` rewrites the `api_key` line via regex — **before** the email, since the rotation is the operationally important step — then `verify_api_key()` checks the new key and `send_api_key_email()` sends the plaintext notification. If the write succeeds but a later step fails, stderr says the credential was already rotated.
 
 ## 6. Function Reference
 
-### `validate_settings()`
-Checks the login URL is HTTPS, timeout is positive, and email sender/recipients are set — raises
-`ValueError` otherwise, before any network/file/email activity.
-
-### `read_credentials() -> tuple[str, str]`
-Uses configured tutor username/password if present, else prompts interactively
-(`getpass` for the password). Raises if either ends up empty.
-
-### `extract_api_key(payload) -> str`
-Requires `payload["code"]==200` and a non-empty `user.apikey`, 16–256 characters, no whitespace.
-Error messages are truncated to 200 chars for safety.
-
-### `generate_api_key(username, password, session=None) -> str`
-The single login POST (multipart `JSONString` field). Network errors, invalid JSON, `429`, and
-any non-2xx status all raise `ApiKeyGenerationError` immediately — no retry logic.
-
-### `update_shared_api_key(credentials_path, new_api_key)`
-Refuses to write an empty key; regex-replaces exactly one `api_key: "..."` line (refuses if zero
-or more than one match, protecting against a restructured file); writes via `.tmp` +
-`fsync` + `os.replace()`.
-
-### `send_api_key_email(api_key, username, email_password)`
-Validates SMTP config is complete, builds a plaintext message (username, timestamp, full key),
-sends via `smtplib.SMTP` with STARTTLS.
+- **`validate_settings()`** — HTTPS URL, positive timeout, email sender/recipients set; raises `ValueError` before any network/file/email activity.
+- **`read_credentials()`** — configured username/password, else interactive prompt; raises if either is empty.
+- **`extract_api_key(payload)`** — requires `code==200` and a non-empty `user.apikey` of 16–256 chars with no whitespace; error messages are cut to 200 chars.
+- **`generate_api_key(username, password, session=None)`** — the single login POST; network errors, invalid JSON, `429` and non-2xx raise `ApiKeyGenerationError`, no retry.
+- **`update_shared_api_key(path, key)`** — refuses an empty key; regex-replaces exactly one `api_key: "..."` line (refuses on zero or several matches); writes via `.tmp` + `fsync` + `os.replace()`.
+- **`send_api_key_email(...)`** — plaintext message (username, timestamp, full key) via `smtplib.SMTP` with STARTTLS.
 
 ## 7. Configuration & Parameters
 
@@ -116,18 +86,9 @@ sends via `smtplib.SMTP` with STARTTLS.
 
 ## 8. Data Transformation, Output & Schema
 
-**Transformations:** login payload shaped as a JSON string inside a multipart field (not a
-standard JSON body) · extracted key trimmed and length/whitespace-validated before trust ·
-credential file patched via regex substitution (no YAML re-dump, so formatting elsewhere is
-untouched) · email body assembled from username, timestamp, and the full key.
+**Transformations:** login payload shaped as a JSON string inside a multipart field · key trimmed and length/whitespace-validated before trust · `credentials.yaml` patched by regex (no YAML re-dump, so other formatting is untouched) · email body from username, timestamp and key.
 
-**Output:** **Not applicable** — no CSV/XLSX/JSON dataset. The only persistent effects are (a)
-rewriting one line of `credentials.yaml`, (b) sending one notification email. `output/` holds
-only a placeholder README.
-
-**Schema:** N/A — no dataset produced.
-
-**Database integration:** not applicable.
+**Output / schema / database:** none — no dataset. The only persistent effects are rewriting one line of `credentials.yaml` and sending emails; `output/` holds a placeholder README (and `rotation.log` from cron).
 
 ## 9. Data Quality & Known Limitations
 
@@ -148,13 +109,7 @@ requirement before writing `credentials.yaml`, non-empty key before writing.
 
 ## 10. Error Handling & Logging
 
-Uses `print()`/`sys.stderr`, not `logging` — no log file. `main()` catches
-`ApiKeyGenerationError`/`EmailDeliveryError`/`CredentialsUpdateError`/`ValueError`, reporting
-either "failed safely" (nothing changed) or, if the write already succeeded, an explicit message
-that the key **was** rotated even though a later step failed. No retry on the login call by
-design. The key value is structurally prevented from appearing in any log/print/exception message
-(verified across all three key-handling modules). Example failure message:
-`credentials.yaml WAS updated with the new key, but a later step failed: <error>`
+`print()`/`sys.stderr`, not `logging`. `main()` catches `ApiKeyGenerationError`/`EmailDeliveryError`/`CredentialsUpdateError`/`ValueError` and reports either "failed safely" (nothing changed) or, if the write already succeeded, that the key **was** rotated though a later step failed (e.g. `credentials.yaml WAS updated with the new key, but a later step failed: <error>`). No retry on the login call by design. The key value cannot appear in any log/print/exception message (checked across the three key-handling modules).
 
 ## 11. Dependencies
 
@@ -166,59 +121,32 @@ design. The key value is structurally prevented from appearing in any log/print/
 
 ## 12. Setup & How to Run
 
-Unlike the other 7 pipelines, this tool is meant to run standalone (it's a key rotation, not a data pull), so it has its own `requirements.txt` rather than relying on
-the shared repo-root `.venv/` — either works, since both provide the same `requests`/`PyYAML`.
-
-**Step by step (on the VPS, using the shared venv):**
-1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session.
-2. Populate `../../credentials.yaml`'s `tutor_login` block (blank username/password forces an
-   interactive prompt).
-3. Populate `../notifications.yaml` with valid SMTP settings and at least one recipient.
-4. `cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts` and run a command below.
-
-**Or, running it standalone (e.g. on a Windows machine, via its own `requirements.txt`):**
-1. `pip install -r requirements.txt` (from `scripts/`).
-2. Steps 2–3 above (populate both credential files — neither should ever be committed).
-3. Double-click `run_generate_and_email_api_key.bat`, or run the commands below directly.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: fill in `../../credentials.yaml`'s `tutor_login` block (blank username/password forces a prompt) and `../notifications.yaml` (valid SMTP settings, at least one recipient). It also has its own `requirements.txt`, so it can run standalone (e.g. on Windows via `run_generate_and_email_api_key.bat`) as well as with the shared venv.
 
 ```bash
-# Full real run (rotates the live key and emails it)
-python3 edmingle_generate_api_key.py
-
-# Configuration check only (no network/file/email)
-python3 edmingle_generate_api_key.py --check-config
-
-# Check the key currently in credentials.yaml still works (one read-only call, changes nothing)
-python3 edmingle_generate_api_key.py --verify-only
-
-# Rotate even though another pipeline is running (it will fail with invalid credentials)
-python3 edmingle_generate_api_key.py --force
-
-# Windows launcher (same as the full run)
-run_generate_and_email_api_key.bat
-
-# Tests (fully offline)
-python3 -m unittest discover
+source /home/projectdev/ela_datasets/.venv/bin/activate
+cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts
+python3 edmingle_generate_api_key.py                # rotate the live key and email it
+python3 edmingle_generate_api_key.py --check-config # settings only (no network/file/email)
+python3 edmingle_generate_api_key.py --verify-only  # does the current key still work? changes nothing
+python3 edmingle_generate_api_key.py --force        # rotate even if a pipeline is running (it will fail)
+python3 -m unittest discover                        # tests (fully offline)
 ```
+
+Short manual utility, so there is no tmux section.
 
 ## 13. Automation / Scheduling
 
-**Yes — monthly, on the 25th at 09:00 IST**, by cron on the VPS (added 2026-09-25 at the project owner's
-request; before that this tool was manual-only). The server clock is UTC, so the entry is:
+**Yes — monthly, on the 25th at 09:00 IST**, by cron on the VPS (added 2026-09-25 at the project owner's request). The server clock is UTC, so the entry is:
 
 ```
 30 3 25 * *   cd .../edmingle_api_key_generator/scripts && (date -Is; .venv/bin/python3 edmingle_generate_api_key.py) >> ../output/rotation.log 2>&1
 ```
 
-- **Next runs:** 2026-10-25, 2026-11-25, 2026-12-25 (each 03:30 UTC = 09:00 IST).
-- **If a pipeline is running at that moment,** nothing is rotated: the run exits with code 2, writes the reason to
-  `output/rotation.log`, and emails a "SKIPPED" notice. It does **not** retry until next month, so rotate by hand
-  (or with `--force`) once the pipeline finishes if the key must change sooner.
-- **Emails you can get:** the new key (after it was saved *and* checked); a "SKIPPED" notice; a "FAILED" notice; a
-  "FAILED - new key not accepted" notice. Notices never contain the key, and are sent only if `app_password` is set in
-  `../notifications.yaml` (a scheduled run has nobody to prompt).
-- **Not exercised end to end yet:** the guard, key check, notices and cron entry were tested (33 unit tests, `--verify-only`
-  and the guard against the real process table), but no full scheduled rotation has run since they were added.
+- **Next runs:** 2026-10-25, 2026-11-25, 2026-12-25 (03:30 UTC each).
+- **If a pipeline is running,** nothing is rotated: exit code 2, the reason goes to `output/rotation.log`, and a "SKIPPED" notice is emailed. There is no retry until next month — rotate by hand once it finishes if needed sooner.
+- **Emails:** the new key (after it was saved *and* checked), or a "SKIPPED" / "FAILED" / "FAILED - new key not accepted" notice. Notices never contain the key and need `app_password` set in `../notifications.yaml` (a scheduled run has nobody to prompt).
+- **Not yet exercised end to end:** the guard, key check, notices and cron entry passed 33 unit tests plus `--verify-only` and the guard against the real process table, but no full scheduled rotation has run since they were added.
 
 ## 14. Important Business / Technical Rules
 
@@ -253,17 +181,11 @@ request; before that this tool was manual-only). The server clock is UTC, so the
 
 ## 17. Upstream & Downstream Dependencies
 
-**Upstream:** Edmingle's tutor login endpoint; the tutor's own credentials. **Downstream:** every
-other `ela_datasets` pipeline that reads `credentials.yaml` (all seven others) depends on this
-script as their sole means of keeping `api_key` valid.
+**Upstream:** Edmingle's tutor login endpoint and the tutor's credentials. **Downstream:** every other `ela_datasets` pipeline that reads `credentials.yaml` depends on this script to keep `api_key` valid.
 
 ## 18. Security Considerations
 
-Tutor login credentials and the generated key exist only in memory and the two sanctioned
-destinations — never logged/printed. Both YAML files are gitignored. The notification email is
-plaintext over SMTP with STARTTLS (encrypted in transit, but the key itself isn't encrypted in
-the body). The writer's refuse-to-write behavior on a structural mismatch is itself a security
-control against silently corrupting the shared credentials file.
+The tutor credentials and the generated key exist only in memory and the two sanctioned destinations. Both YAML files are gitignored. The notification email is plaintext over SMTP with STARTTLS (encrypted in transit, but the key is not encrypted in the body). The writer's refuse-to-write on a structural mismatch protects the shared credentials file from silent corruption.
 
 ## 19. Raw API Payload (Captured Structure)
 

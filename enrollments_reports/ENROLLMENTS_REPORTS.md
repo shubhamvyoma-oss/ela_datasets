@@ -2,15 +2,11 @@
 
 ## 1. Overview & Purpose
 
-Pulls row-level enrollment records from Edmingle's `/reports/enrollment` endpoint over an
-arbitrary historical date range into one CSV. Because Edmingle rejects large single-shot ranges,
-the request is split into fixed-size day "chunks," fetched page by page, with every page
-checkpointed so an interrupted run resumes exactly where it left off.
+Pulls row-level enrollment records from Edmingle's `/reports/enrollment` endpoint over a historical date range into one CSV. Edmingle rejects large single-shot ranges, so the range is split into fixed-size day "chunks", fetched page by page, with every page checkpointed so an interrupted run resumes exactly where it stopped.
 
-**As of this audit (2026-09-24), this pipeline is in a blocked/failed state** — see Section 9.
+**As of the 2026-09-24 audit this pipeline is in a blocked/failed state** — see Section 9.
 
-**Purpose:** a single historical enrollment-level CSV covering an operator-specified date range,
-resumable across crashes/restarts without re-fetching or duplicating rows.
+**Purpose:** one historical enrollment-level CSV for an operator-specified range, resumable across crashes without re-fetching or duplicating rows.
 
 ## 2. High-Level Data Flow
 
@@ -53,10 +49,6 @@ within this repo consumes it.
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `RollingRateLimiter`, atomic writes, `send_mail`. |
 | `../notifications.yaml` | SMTP/recipient config (this pipeline's own folder). |
 
-**Documentation/reality mismatch:** the pipeline's own prior documentation lists
-`edmingle_rate_limiter.py` as a file in `scripts/`; it doesn't exist — rate limiting is entirely
-`common.RollingRateLimiter` now, a stale line from the 2026-09-23 consolidation.
-
 ## 4. Source System
 
 | Source | Endpoint | Method | Auth | Parameters | Pagination | Rate Limit |
@@ -65,37 +57,19 @@ within this repo consumes it.
 
 ## 5. Extraction Process
 
-Loads credentials (exits if missing) and merges the inline `DEFAULTS` dict. `run()` builds/loads
-the chunk plan, then compares the existing checkpoint's `start_date`/`end_date`/`chunk_days`/
-`per_page` against the current invocation: identical + incomplete → resume; identical + complete
-→ refuse (delete the checkpoint to force a rerun); different → start fresh, overwriting the
-output. A start/resume email is sent. On resume, the CSV is truncated to the last confirmed byte
-offset first. Each chunk's pages are fetched and written immediately, flushed/`fsync`'d, with the
-checkpoint saved after every page. `None` API values become empty strings, never the text
-`"None"`. On completion, a summary email is sent. A permanent error (400/401/403/404) or any
-other unhandled exception stops the run immediately with a failure email — no retry-forever loop
-for this class of error.
+1. Load credentials (exit if missing) and merge the inline `DEFAULTS`.
+2. `run()` builds/loads the chunk plan, then compares the existing checkpoint's `start_date`/`end_date`/`chunk_days`/`per_page` with this invocation: identical + incomplete → resume; identical + complete → refuse (delete the checkpoint to force a rerun); different → start fresh, overwriting the output.
+3. Send a start/resume email; on resume, first truncate the CSV to the last confirmed byte offset.
+4. Fetch each chunk's pages, write immediately (flush + `fsync`), save the checkpoint after every page; `None` becomes an empty string, never `"None"`.
+5. On completion send a summary email. A permanent error (400/401/403/404) or any unhandled exception stops the run with a failure email — no retry loop for those.
 
 ## 6. Function Reference
 
-### `fetch_page(...)`
-One page for one chunk window. Retries forever (exponential backoff) on network/JSON/shape
-errors; `429` sleeps `max(rate_limit_block_seconds, Retry-After)` and resets the limiter;
-`400/401/403/404` raise `PermanentAPIError` immediately.
-
-### `build_chunks(start_date, end_date, chunk_days) -> list[tuple]`
-Splits the range into fixed windows; exits via `sys.exit` if `start_date > end_date`.
-
-### `load_or_create_chunk_plan(...)`
-Reuses the persisted plan if its own start/end/chunk_days match the current request; regenerates
-and persists otherwise.
-
-### `truncate_to_offset(path, offset)`
-Truncates a file to a known-good byte offset in `r+b` mode, then flushes/`fsync`s.
-
-### `EdmingleExportRun._resolve_resume_state(checkpoint, num_chunks)`
-Classifies the run as fresh, resumable, or already-complete by comparing checkpoint parameters to
-the current invocation; returns `None` for the already-complete case.
+- **`fetch_page(...)`** — one page for one chunk. Network/JSON/shape errors retry forever with exponential backoff; `429` sleeps `max(rate_limit_block_seconds, Retry-After)` and resets the limiter; `400/401/403/404` raise `PermanentAPIError`.
+- **`build_chunks(start, end, chunk_days)`** — fixed windows; `sys.exit` if `start > end`.
+- **`load_or_create_chunk_plan(...)`** — reuses the persisted plan if start/end/chunk_days match, else regenerates and persists.
+- **`truncate_to_offset(path, offset)`** — truncates to a known-good byte offset (`r+b`), then flush + `fsync`.
+- **`EdmingleExportRun._resolve_resume_state(...)`** — classifies the run as fresh, resumable or already complete (`None`).
 
 ## 7. Configuration & Parameters
 
@@ -129,23 +103,16 @@ enforcement, chunk-plan and checkpoint parameter matching before reuse/resume, b
 truncation before resuming, null→empty-string handling.
 
 **Confirmed limitations:**
-- **Currently blocked.** The live log ends with `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error` — a 400/401/403/404 from Edmingle, no retry. Last successful run: **2026-09-08 06:02:23**, 8,572 rows for August 2026 (checkpoint confirms `completed: true`).
-- **A latent code defect will block the next run regardless of the API-key issue:** `EdmingleExportRun.run()` (edited 2026-09-23, after the log's last run) calls the module-level `send_mail(subject, body, logger)` as `send_mail(self.config, subject=..., body=..., logger=...)` at two points (start/resume and completion notifications) — an extra positional argument that will raise `TypeError: send_mail() got multiple values for argument 'subject'` the next time either is reached. The failure/crash-handler `send_mail(...)` calls in `main()` do **not** have this defect. No log evidence of the `TypeError` yet, since the last logged run predates this edit.
-- **An unexplained 115MB file** (`edmingle_enrollment_01012010_25082026.csv`, 450,797 lines) has no checkpoint/chunks/log companion, matches an older pre-2026-09-23 naming pattern, and its size is inconsistent with this pipeline's own rate limit (30 calls/min would take far longer than the file's own ~22-second creation-to-modify window). Origin unconfirmed.
+- **Blocked at the last run.** The live log ends with `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error` (a 400/401/403/404, no retry). Last successful run: **2026-09-08 06:02:23**, 8,572 rows for August 2026 (`completed: true`). API access with the current key worked when tested on 2026-09-25, so the cause was probably the earlier key.
+- **Code defect that will block the next run:** `EdmingleExportRun.run()` (edited 2026-09-23) calls `send_mail(self.config, subject=..., body=..., logger=...)` for the start/resume and completion emails — an extra positional argument that raises `TypeError: send_mail() got multiple values for argument 'subject'` when reached. The failure handlers in `main()` are fine. Not yet seen in a log (the last logged run predates the edit). **Not fixed.**
+- **An unexplained 115 MB file** (`edmingle_enrollment_01012010_25082026.csv`, 450,797 lines) has no checkpoint/chunks/log, follows the old naming pattern, and is inconsistent with the 30 calls/min limit (its creation-to-modify window is ~22 s). Origin unconfirmed.
 - No de-duplication across chunk boundaries or repeated overlapping-range runs.
-- Prior documentation references a `edmingle_rate_limiter.py` file that no longer exists.
 
 **Requires confirmation:** the root HTTP status/cause behind the 2026-09-23 permanent error (not captured in the summary log line alone); the origin of the unexplained 115MB file.
 
 ## 10. Error Handling & Logging
 
-`logging.basicConfig`, format `%(asctime)s [%(levelname)s] %(message)s`, to both the log file and
-stdout. Real line from the current log: `2026-09-23 12:43:08 [ERROR] Edmingle export stopped:
-permanent API error`. `PermanentAPIError` is caught in `main()`, logged, emailed, exit 1 — no
-retry (matches the documented policy that permanent errors need a human fix). All other
-exceptions are caught generically with a full traceback, emailed with resume instructions, exit
-1. `KeyboardInterrupt` exits 130, resuming automatically next run. **Note the `send_mail` defect
-above** — the started/completion emails will now fail with a `TypeError` until fixed.
+`logging.basicConfig` (`%(asctime)s [%(levelname)s] %(message)s`) to the log file and stdout. Last real line: `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error`. `PermanentAPIError` is caught in `main()`, logged, emailed, exit 1 (a human must fix it). Other exceptions are logged with a traceback, emailed with resume instructions, exit 1. `KeyboardInterrupt` exits 130 and resumes automatically next run. The `send_mail` defect (Section 9) makes the started/completion emails fail until fixed.
 
 ## 11. Dependencies
 
@@ -160,38 +127,28 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 
 ## 12. Setup & How to Run
 
-**Before you start:**
-1. **Fix the `send_mail(self.config, ...)` defect (Section 9) before the next run** — as written, it will crash with a
-   `TypeError` at the first "started" email.
-2. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-3. Populate `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
-4. **Dates are `DD-MM-YYYY`** — the one pipeline in this repo that differs from every other pipeline's `YYYY-MM-DD`,
-   because it's what Edmingle's own API for this endpoint expects.
-5. There's no watchdog/auto-restart: a crash means running the same command again (it resumes from its checkpoint).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running:
+1. **Fix the `send_mail(self.config, ...)` defect (Section 9)** — otherwise the first "started" email crashes the run.
+2. Fill in `../../credentials.yaml`; fill in `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+3. **Dates are `DD-MM-YYYY`** — unlike every other pipeline (`YYYY-MM-DD`), because that is what Edmingle's endpoint expects.
+4. No watchdog: a crash means running the same command again (it resumes). `--output` overrides the fixed default filename and its companions.
 
-**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+**Run it in tmux** (session name = folder name; long ranges take hours):
 
 ```
-step 1: tmux new -s enrollments_reports
-        (starts the session -- the session name is the dataset folder name)
-step 2: activate the environment, open the directory and run the script
+step 1: tmux new -s enrollments_reports          start the session (name = folder name)
+step 2: activate the venv, open the directory, run the script
         source /home/projectdev/ela_datasets/.venv/bin/activate
         cd /home/projectdev/ela_datasets/enrollments_reports/scripts
         python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026
-Ctrl+B then D                to detach / come out of the session (the script keeps running)
-tmux ls                      to see the list of active sessions
-tmux attach -t enrollments_reports      to return to / open the session
-exit                         (inside the session, when the run has finished) to close it
+Ctrl+B then D                detach (the script keeps running)
+tmux ls                      list active sessions
+tmux attach -t enrollments_reports      return to the session
 ```
-
-`--output` overrides the fixed default filename and its companions. A step-by-step version is in `RUN_GUIDE.md` in this
-folder.
 
 ## 13. Automation / Scheduling
 
-None currently. A prior `edmingle_watchdog.sh` wrapper (auto-restart, email after 30 failed
-restarts) was **removed 2026-09-23** — failure/crash emails now come directly from `main()`'s own
-exception handling instead.
+None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23**; failure/crash emails now come from `main()`'s own exception handling.
 
 ## 14. Important Business / Technical Rules
 
@@ -221,15 +178,11 @@ exception handling instead.
 
 ## 17. Upstream & Downstream Dependencies
 
-**Upstream:** Edmingle's `/reports/enrollment` endpoint; shared `credentials.yaml` (rotated by
-`edmingle_api_key_generator`). **Downstream:** none found within this repo — terminal output.
+**Upstream:** Edmingle's `/reports/enrollment` endpoint; the shared `credentials.yaml` (rotated by `edmingle_api_key_generator`). **Downstream:** none in this repo.
 
 ## 18. Security Considerations
 
-The API key is sent only in headers, never logged/printed.
-`../notifications.yaml` is `chmod 600`.
-Output CSVs contain student PII (name, email, phone, shipping details) — access to `output/`
-should be restricted; no access control exists in the script itself.
+The API key is sent only in headers, never logged or printed. `../notifications.yaml` is `chmod 600`. Output CSVs contain student PII (name, email, phone, shipping details), so restrict access to `output/`; the script has no access control.
 
 ## 19. Raw API Payload (Captured Structure)
 

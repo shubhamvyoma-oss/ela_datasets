@@ -2,21 +2,13 @@
 
 ## 1. Overview & Purpose
 
-A 3-stage pipeline at `country_wise_data/` that determines each student's country from two
-independent signals and merges them:
+A 3-stage pipeline at `country_wise_data/` that determines each student's country from two signals and merges them:
 
-- **Stage 1 — `ip_driven_country_data.py`**: pulls per-user analytics from Edmingle's
-  `/user/useranalyticslist` endpoint, including Edmingle's own IP-geolocated country.
-- **Stage 2 — `dial_code_to_country.py`**: reads a manually-exported `Student-Export*.csv`
-  roster (dropped into `input/` by hand) and derives a country from each phone dial code.
-- **Stage 3 — `merge_country_data.py`**: joins Stage 1 + Stage 2 on email, producing one row per
-  student with three country columns.
+- **Stage 1 — `ip_driven_country_data.py`**: pulls per-user analytics (including Edmingle's IP-geolocated country) from `/user/useranalyticslist`.
+- **Stage 2 — `dial_code_to_country.py`**: reads a manually exported `Student-Export*.csv` (dropped into `input/`) and derives a country from each phone dial code.
+- **Stage 3 — `merge_country_data.py`**: joins Stage 1 + Stage 2 on email into one row per student with three country columns.
 
-Per the pipeline's own prior documentation, this domain "was never part of the original 5
-documented pipelines" — flag to the project owner if it's meant to be permanent.
-
-**Purpose:** a per-student country signal for reporting/segmentation, cross-checking a low-cost
-dial-code guess against Edmingle's own IP-geolocation value, producing one `final_country`.
+**Purpose:** a per-student country signal for reporting, cross-checking a cheap dial-code guess against Edmingle's IP-geolocation, producing one `final_country`. This domain was not part of the original 5 documented pipelines — flag to the project owner if it is meant to be permanent.
 
 ## 2. High-Level Data Flow
 
@@ -79,55 +71,21 @@ flowchart TD
 
 ## 5. Extraction Process
 
-**Stage 1:** `load_config()` reads the JSON config and injects credentials → `run_collection()`
-ensures a CSV header exists, loads/truncates to the last good checkpoint offset (undoing any
-partial write from a crash) → loops pages, rate-limiting each call, retrying transient failures
-(5x, linear-ish backoff) and treating 400/401/403/404 as permanent (page skipped, run exits 1) →
-each page's rows are appended and the checkpoint saved atomically → stops when `has_more_page` is
-false or a page returns no users.
+**Stage 1:** `load_config()` reads the JSON config and credentials → `run_collection()` ensures a CSV header, truncates to the last good checkpoint offset (undoing any partial write) → loops pages with rate limiting and retries (5×; 400/401/403/404 are permanent: page skipped, run exits 1) → appends each page's rows and saves the checkpoint atomically → stops when `has_more_page` is false or a page has no users.
 
-**Stage 2:** picks the newest `Student-Export*.csv` in `input/` (or `--input`) → preserves an
-optional leading junk title line if present → derives country per row from the dial-code column
-→ writes `<input>_with_country.csv`.
+**Stage 2:** picks the newest `Student-Export*.csv` in `input/` (or `--input`), keeps an optional leading junk title line, derives the country per row from the dial-code column, writes `<input>_with_country.csv`.
 
-**Stage 3:** loads Stage 1's output into an email→country lookup (first row wins on duplicates;
-a missing file is tolerated as zero rows) → reads Stage 2's output → merges on normalized email,
-computing `final_country` (ip-driven wins, dial-code fallback, blank if neither) → writes
-`merged_country_data.csv` with a match-count summary.
+**Stage 3:** loads Stage 1's output into an email→country lookup (first row wins; a missing file counts as zero rows), reads Stage 2's output, merges on normalized email (`final_country`: ip-driven, else dial-code, else blank), writes `merged_country_data.csv` with a match-count summary.
 
 ## 6. Function Reference
 
-### `fetch_page(...)`
-One page of `/user/useranalyticslist` with retry logic: up to 5 attempts, linear-ish backoff for
-transient failures, 300s cooldown + limiter reset on `429`, immediate `None` on 400/401/403/404.
-
-### `run_collection(cfg, script_dir)`
-Orchestrates the full paginated pull; on a genuinely fresh run, the byte offset starts at the
-header's own size so the header is never truncated away.
-
-### `save_checkpoint(...)` / `truncate_to_offset(...)`
-Atomic checkpoint writes (`.tmp` + `os.replace()`); truncates the CSV back to the last confirmed
-byte offset if a crash left partial rows appended past it. File ops retry transient
-`PermissionError`/`OSError` (e.g. antivirus/OneDrive locks) up to 6 times.
-
-### `dial_code_to_country(raw_dial_code) -> str`
-Normalizes the input (`-`, `N/A`, `null`, etc. → blank), strips a leading `+`, falls back to a
-leading digit run for malformed codes, looks up the region via `phonenumbers`
-(taking the **first** region for shared codes like `+1`/`+44`/`+7`), converts to a name via
-`pycountry`. Cached per code and per region.
-
-### `process_csv(...)`
-Reads the manual export, requires the dial-code column to exist (exits with available columns if
-not), appends `"Derived Country (Dial Code)"` (replacing any pre-existing column of that name),
-prints a `total`/`derived`/`blank` summary.
-
-### `load_ip_driven_lookup(path) -> dict`
-Empty dict + warning if the file is missing/headerless; hard exit if `email`/`country` columns
-are absent; normalizes/lowercases emails; first row wins on duplicates (logged).
-
-### `merge(dial_path, ip_path, output_path)`
-Builds the final schema (original columns + renamed `dial_country` + `ip_driven_country` +
-`final_country`), applies the precedence rule, writes the output, and prints match counts.
+- **`fetch_page(...)`** — one page with retry: 5 attempts, backoff on transient errors, 300 s cooldown + limiter reset on `429`, immediate `None` on 400/401/403/404.
+- **`run_collection(cfg, script_dir)`** — the full paginated pull; on a fresh run the byte offset starts at the header's size so the header is never truncated.
+- **`save_checkpoint(...)` / `truncate_to_offset(...)`** — atomic checkpoint (`.tmp` + `os.replace()`); cuts the CSV back to the last confirmed byte offset. File ops retry `PermissionError`/`OSError` up to 6 times.
+- **`dial_code_to_country(raw)`** — normalizes (`-`, `N/A`, `null` → blank), strips `+`, falls back to a leading digit run, looks up the region with `phonenumbers` (first region for shared codes like `+1`/`+44`/`+7`), converts via `pycountry`; cached.
+- **`process_csv(...)`** — requires the dial-code column (else exits listing columns), appends `Derived Country (Dial Code)`, prints a total/derived/blank summary.
+- **`load_ip_driven_lookup(path)`** — empty dict + warning if the file is missing/headerless; exits if `email`/`country` columns are absent; lowercases emails; first row wins on duplicates (logged).
+- **`merge(dial_path, ip_path, output_path)`** — builds the final schema, applies the precedence rule, writes the output, prints match counts.
 
 ## 7. Configuration & Parameters
 
@@ -158,12 +116,7 @@ column rename (`Derived Country (Dial Code)` → `dial_country`).
 | `Student-Export_with_country.csv` | Full read-then-write. |
 | `merged_country_data.csv` | Full read-then-write. |
 
-**Confirmed state (2026-09-24):** `input/Student-Export.csv` — 131,212 data rows, modified
-2026-09-23. `Student-Export_with_country.csv` and `merged_country_data.csv` both match that row
-count exactly (no rows dropped). **`user_country_list.csv` has zero data rows** — header only, no
-checkpoint file either — Stage 1 has never run, even partially, on this server. Direct
-consequence: `ip_driven_country` is blank for all ~130,188 effective student rows and
-`final_country` equals `dial_country` everywhere right now.
+**Confirmed state (2026-09-25):** `input/Student-Export.csv` was replaced today (127,931 data rows). Stage 2/3 outputs on disk were built on 2026-09-24 from the previous export (131,212 rows) and are now stale. Stage 1 has run **partly**: `user_country_list.csv` has 61,722 rows and its checkpoint stands at page 124; the process is not running, so it needs a re-run to finish (it resumes). Until it finishes, `ip_driven_country` is blank for most rows and `final_country` is mostly `dial_country`.
 
 **Database integration:** not applicable — CSV/JSON output only.
 
@@ -187,24 +140,18 @@ with no duplicate/orphan rows, retry-with-rollback per page, required input colu
 file tolerated as zero rows.
 
 **Confirmed limitations:**
-- **Stage 1 has never produced data on this server** — header-only output, no checkpoint file. The merge's override logic (ip-driven wins) has never actually been exercised.
-- Not part of the originally documented 5-pipeline scope — flag to the project owner if it should be.
+- **Stage 1 is unfinished** (page 124, 61,722 rows) — the merge has not yet run against a complete Stage 1 file.
 - `input/` holds real, unmasked student PII (names, emails, phones, addresses, parent contacts) — gitignored, must stay that way.
 - Country name formats aren't normalized between sources — `pycountry`'s official names (dial-code) vs. Edmingle's raw value (ip-driven) could disagree in formatting for the same country.
 - Contact-number join was explicitly rejected in favor of email (~29% of rows have a blank/dash contact number vs. ~0.02% blank email) — but any student with a blank/mismatched email can never match a Stage-1 record.
 - No cross-check that country values are real recognized names.
 - Stage 1's page loop has no max-page safety cap — relies entirely on Edmingle's own `has_more_page` flag.
 
-**Requires confirmation:** whether/when Stage 1 should first be run for real, and on what cadence; whether this pipeline should be added to the project's documented scope.
+**Requires confirmation:** when Stage 1 should be finished and on what cadence; whether this pipeline belongs in the documented scope.
 
 ## 10. Error Handling & Logging
 
-Stage 1 logs via a custom `log()` printing `[timestamp] message` to stdout (no file logging); a
-permanently-failed page exits with code 1, checkpoint untouched so a re-run resumes at the same
-page. File I/O retries transient `PermissionError`/`OSError` up to 6 times with exponential
-backoff. Stages 2 & 3 print plain summary lines and exit via `sys.exit(<message>)` on a missing
-required file/column — no retry logic (one-shot, non-network scripts). No email/alerting anywhere
-in this pipeline.
+Stage 1 prints `[timestamp] message` to stdout (no log file); a permanently failed page exits with code 1 and leaves the checkpoint untouched, so a re-run resumes at that page. File I/O retries transient `PermissionError`/`OSError` up to 6 times. Stages 2 and 3 print summary lines and `sys.exit(<message>)` on a missing file/column (one-shot, no retries). No email/alerting anywhere in this pipeline.
 
 ## 11. Dependencies
 
@@ -218,45 +165,21 @@ in this pipeline.
 
 ## 12. Setup & How to Run
 
-**Step by step:**
-1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
-   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `requests`,
-   `pyyaml`, `phonenumbers`, `pycountry` installed, so no `pip install` step is needed.
-2. Populate `../../credentials.yaml` (Stage 1 only) — shared by every pipeline, likely already done.
-3. Drop a fresh `Student-Export*.csv` into `input/` before running Stage 2.
-4. Confirm Stage 1's config date window covers the desired range.
-5. `cd /home/projectdev/ela_datasets/country_wise_data/scripts` and run all three stages in order
-   (each depends on the previous one's output).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (Stage 1 only), a fresh `Student-Export*.csv` in `input/` (Stage 2), the Stage 1 date window checked. Run the stages **in order**.
 
-```bash
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/country_wise_data/scripts
-
-# Stage 1 (must run first for ip_driven_country to populate)
-python3 ip_driven_country_data.py --config ip_driven_country_data_config.json
-
-# Stage 2 (any time after a fresh export is dropped in ../input/)
-python3 dial_code_to_country.py
-
-# Stage 3 (after both Stage 1 and Stage 2 have output)
-python3 merge_country_data.py
-```
-
-**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+**Run it in tmux** (session name = folder name; Stage 1 is long):
 
 ```
-step 1: tmux new -s country_wise_data
-        (starts the session -- the session name is the dataset folder name)
-step 2: activate the environment, open the directory and run the script
+step 1: tmux new -s country_wise_data          start the session (name = folder name)
+step 2: activate the venv, open the directory, run the script
         source /home/projectdev/ela_datasets/.venv/bin/activate
         cd /home/projectdev/ela_datasets/country_wise_data/scripts
         python3 ip_driven_country_data.py --config ip_driven_country_data_config.json
         python3 dial_code_to_country.py
         python3 merge_country_data.py
-Ctrl+B then D                to detach / come out of the session (the script keeps running)
-tmux ls                      to see the list of active sessions
-tmux attach -t country_wise_data      to return to / open the session
-exit                         (inside the session, when the run has finished) to close it
+Ctrl+B then D                detach (the script keeps running)
+tmux ls                      list active sessions
+tmux attach -t country_wise_data      return to the session
 ```
 
 ## 13. Automation / Scheduling
@@ -270,7 +193,7 @@ export into `input/` before each run.
 - `ip_driven_country` always wins over `dial_country` when both are present — a live geo-IP signal is trusted over a dial-code guess.
 - Dial-code-to-country is a "primary country" guess for shared codes (`+1`, `+44`, `+7`) — `phonenumbers`' first-listed region, no further disambiguation.
 - Duplicate Stage-1 emails resolve by "first row wins," not recency/completeness.
-- A missing Stage-1 file doesn't block Stage 3 — treated as zero rows, so `final_country` silently becomes pure `dial_country`. This is the pipeline's actual state today.
+- A missing or partial Stage-1 file doesn't block Stage 3 — missing users get `final_country` = `dial_country` silently.
 
 ## 15. Troubleshooting
 
@@ -281,7 +204,7 @@ export into `input/` before each run.
 | Stage 2: "Column '...' not found" | Dial-code column name changed in a newer export | Pass `--dial-code-column` |
 | Stage 2: "No --input given and no file matching..." | No `Student-Export*.csv` in `input/` | Drop a fresh export, or pass `--input` |
 | Stage 3: "... run dial_code_to_country.py first" | Stage 2 hasn't run, or `--dial-input` is wrong | Run Stage 2, or fix the path |
-| Stage 3's `ip_driven_country` blank for every row | Stage 1 has never produced real data (current state) | Run Stage 1 for real |
+| Stage 3's `ip_driven_country` blank for many rows | Stage 1 unfinished | Re-run Stage 1 until it completes |
 | Stage 3 warns about duplicate emails | Same email appears twice in Stage 1's output | Investigate that user id in Stage 1's source data |
 
 ## 16. Maintenance Guide

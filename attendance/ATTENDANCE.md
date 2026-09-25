@@ -2,13 +2,9 @@
 
 ## 1. Overview & Purpose
 
-`attendance.py` (v1.2.0, 1,459 lines, at `attendance/scripts/attendance.py`) pulls daily student
-attendance from Edmingle (`report_type=55`), one HTTP call per day, and produces two CSVs: a
-per-batch summary and a per-(batch, session) breakdown. Built to run unattended over long date
-ranges (docstring cites a 546-day, ~68-minute historical run).
+`attendance.py` (v1.2.0, `attendance/scripts/attendance.py`) pulls daily student attendance from Edmingle (`report_type=55`), one HTTP call per day, and produces two CSVs: a per-batch summary and a per-(batch, session) breakdown. Built to run unattended over long date ranges.
 
-**Purpose:** a reliable, resumable, crash-safe attendance extraction, so no one has to babysit a
-multi-day backfill or a daily run by hand.
+**Purpose:** a reliable, resumable, crash-safe attendance extraction, so no one has to babysit a multi-day backfill or a daily run.
 
 ## 2. High-Level Data Flow
 
@@ -78,55 +74,24 @@ automatically.
 8. Checkpoint skips already-`success` dates (unless `--retry-failed`/`--reset-checkpoint`).
 9. `run_pull_loop()` calls `fetch_one_day()` per date — handles 200/429/401/403/404/400/5xx/Edmingle 6001/6002, network-outage detection, backoff, and a consecutive-error circuit breaker.
 10. Each fetched day writes to `staging/raw_<date>.csv`; checkpoint updates immediately (crash-safe).
-11. `summarise_staging_files()` reads every staging file **once** and writes only the columns the summary uses (plus a hash of the whole original row) into ~150 MB partition files keyed by `batch_Id`; steps 12–15 then run **once per partition** and the small results are joined. Every metric is per batch, so each batch is summarised whole and the output is identical to processing everything at once. (`--from-file` skips extraction and loads the one file in memory, as before.)
+11. `summarise_staging_files()` reads every staging file **once**, keeps only the columns the summary uses (plus a hash of the whole original row) and writes them into ~150 MB partition files keyed by `batch_Id`; steps 12–15 then run **once per partition** and the small results are joined. Every metric is per batch, so the output is identical to processing everything at once. (`--from-file` skips extraction and loads that one file in memory.)
 12. `clean_data()` — parses dates, dedupes, drops rows missing key columns, flags (doesn't drop) conflicting rows, filters inactive students.
 13. `resolve_session_id_column()` — `attendance_id`, falling back to `class_Id` with a warning.
 14. `validate_present_value()` — aborts the run if `"P"` never appears.
 15. `build_class_summary()` computes per-(batch, session) aggregates; `compute_batch_summary()`/`build_session_wise_output()` derive the two output CSVs.
-16. `EmailNotifier` sends completion/critical/warning email per `notifications.yaml` — never raises on send failure.
-17. Lock released on clean exit or SIGINT/SIGTERM.
+16. `EmailNotifier` sends completion/critical/warning email per `notifications.yaml` (never raises); the lock is released on clean exit or SIGINT/SIGTERM.
 
 ## 6. Function Reference
 
-### `load_config(config_path: str) -> dict`
-Merges `config.yaml` over defaults, injects credentials/notifications, validates required keys
-(exits with a clear message if missing), anchors relative paths to the script's own folder.
-
-### `fetch_one_day(date_str, session, cfg, log, dry_run=False) -> pd.DataFrame`
-One day of `report_type=55` data with retry/backoff. `200` → parsed; `429` → `Retry-After` or
-backoff+jitter; `401/403/404`/Edmingle `6002` → `FatalAPIError`, no retry; `400`/`6001` → date
-skipped, no retry; `5xx` → backoff+retry. On timeout/connection error, checks `is_online()` — if
-the internet itself is down, waits and retries the same date for free; otherwise counts as a
-normal retry. Raises `ValueError` once retries are exhausted.
-
-### `resolve_session_id_column(df, cfg, log) -> str`
-Returns `attendance_id` if present; else falls back to `class_Id` with a warning (undercounts
-sessions — `class_Id` is a subject identifier, not a session).
-
-### `filter_active_students(df, cfg, log) -> pd.DataFrame`
-Allow-list filter on `studentBatchStatus` (default `["Active"]`), togglable; passes data through
-unchanged (with a warning) if the toggle is off or the status column is missing.
-
-### `clean_data(df, session_col, cfg, log) -> pd.DataFrame`
-Parses `classDate`, drops unparseable/duplicate/key-incomplete rows, logs (keeps) conflicting
-`(student_Id, session_col)` pairs, calls `filter_active_students()`, derives `_class_datetime` for
-chronological session ordering.
-
-### `validate_present_value(df, cfg)`
-Raises `PipelineError` if the configured present-value marker ("P") never appears — guards
-against a silently-all-zero run.
-
-### `build_class_summary(df, session_col, cfg) -> pd.DataFrame`
-Per-`(batch_Id, session_col)` present/absent/late/marked counts, `session_number` (chronological,
-per batch), and `is_conducted` (`classDate <= TODAY`). Feeds both output builders below.
-
-### `compute_batch_summary(df, session_col, cfg) -> pd.DataFrame`
-Per-batch rollup: enrollment, planned/conducted/remaining class counts, first/last attendance,
-attendance %, average/high/low class attendance, average rating, retention %, attendance drop.
-Returns columns in the fixed `OUTPUT_COLUMNS` order.
-
-### `build_session_wise_output(df, session_col, cfg) -> pd.DataFrame`
-Same aggregation, reshaped to one row per (batch, session) in `SESSION_OUTPUT_COLUMNS` order.
+- **`load_config(path)`** — merges `config.yaml` over defaults, injects credentials/notifications, validates required keys, anchors relative paths to the script's folder.
+- **`fetch_one_day(...)`** — one day with retry/backoff: `200` parsed; `429` waits `Retry-After` or backoff+jitter; `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. On timeout it checks `is_online()`: if the internet is down it waits and retries the same date for free. Raises `ValueError` when retries run out.
+- **`resolve_session_id_column(...)`** — `attendance_id`, else `class_Id` with a warning (undercounts sessions: `class_Id` is a subject id, not a session).
+- **`filter_active_students(...)`** — allow-list on `studentBatchStatus` (default `["Active"]`), togglable.
+- **`clean_data(...)`** — parses `classDate`, drops unparseable/duplicate/key-incomplete rows, logs (keeps) conflicting `(student_Id, session)` pairs, filters students, derives `_class_datetime`.
+- **`validate_present_value(...)`** — raises `PipelineError` if the present marker ("P") never appears (guards against a silently all-zero run).
+- **`build_class_summary(...)`** — per-(batch, session) present/absent/late/marked counts, chronological `session_number`, `is_conducted` (`classDate <= TODAY`).
+- **`compute_batch_summary(...)`** — per-batch rollup in `OUTPUT_COLUMNS` order (enrollment, first/last attendance, attendance %, average/high/low, rating, retention, drop).
+- **`build_session_wise_output(...)`** — the same aggregation as one row per (batch, session), in `SESSION_OUTPUT_COLUMNS` order.
 
 ## 7. Configuration & Parameters
 
@@ -155,11 +120,7 @@ flag · present-value abort check · per-session→per-batch aggregation.
 | `staging/raw_<date>.csv` | One per fetched day; enables resume. |
 | `pipeline_checkpoint.json` | Per-date status, atomic write. |
 
-**Confirmed state (2026-09-24):** `output/` has exactly one file — the batch summary (290 data
-rows, 82,548 bytes) with a filesystem timestamp of today. `staging/`/`logs/` are empty, and no
-checkpoint/lock/session-wise file exists — inconsistent with a normal run producing that file
-(`cleanup_staging_after_combine` is `false`, so cleanup isn't the explanation). **Requires
-confirmation** how/when it was actually produced.
+**Confirmed state:** `output/` holds one batch summary (`batch_attendance_summary_2020-01-01_to_2026-07-30_…csv`, 290 rows) from an earlier July run, plus the logs. No session-wise file, staging files or checkpoint (the 2,260-day run of 2026-09-24 died out of memory — see below; its staging was deleted and the old checkpoint kept only as `.bak-staging-deleted-2026-09-25`).
 
 **Database integration:** not applicable — CSV output only.
 
@@ -199,25 +160,17 @@ validation.
 - No range/outlier checks (e.g. `attendance_percentage` > 100 wouldn't be caught).
 - `--config` default resolves against the caller's cwd, not the script folder — fails if run from elsewhere without an explicit path.
 - `notifications.yaml` still has placeholder SMTP credentials/recipients with alerts enabled — no real email will arrive until filled in.
-- The one file in `output/` has no supporting staging/log/checkpoint trail — provenance unconfirmed.
-- **Memory (fixed 2026-09-25).** The pipeline used to load every staging file into one DataFrame. The 2020-01-01 → 2026-08-31 run (2,260 days, ~5.6 GB, ~10M rows) died at that step after ~8 hours on this 3.9 GB server and produced no output; the old approach needed roughly 2.3× the data size in RAM (an estimate from a measured 204 MB peak on 53 MB of data). It now uses about 330 MB regardless of range (measured on 649k rows) — but it needs about **half the staging size in free disk** for temporary files, checked up front, and it can only be relied on for a full 2,260-day run once someone has done one (only a ~4-month sample was tested end to end).
-- `cleanup_staging_after_combine` now removes the staging files after the summary files are written (it used to remove them first, so a failed summary lost the raw data). The `clean_data()` log lines repeat once per partition on a large run.
-- Because the combined raw CSV is now written one staging file at a time, a column's number formatting can differ slightly from a single-DataFrame write (e.g. `5` vs `5.0` when a column is blank in some days).
+- **Memory (fixed 2026-09-25).** The pipeline used to load every staging file into one DataFrame; the 2020-01-01 → 2026-08-31 run (2,260 days, ~5.6 GB, ~10M rows) died at that step on this 3.9 GB server. It now uses ~330 MB regardless of range (measured on 649k rows) but needs about **half the staging size in free disk** for temporary files (checked up front). Only a ~4-month sample has been tested end to end, so a full 2,260-day run is still unproven.
+- `cleanup_staging_after_combine` now removes staging files after the summaries are written (it used to remove them first). `clean_data()` log lines repeat once per partition on a large run, and the combined raw CSV is written file by file, so a column's number format can differ slightly (`5` vs `5.0`).
 - `EmailNotifier` uses its own HTML-email code, separate from `common.send_mail()` (plain text) — routing this pipeline through the shared function later would break the HTML formatting unless that function is extended first.
 
-**Verification of the memory fix (2026-09-25):** on real data (55 days, 282,887 rows, 33 batches) the summary and session-wise CSVs were **byte-identical** to the previous all-in-memory code, at 1, 15 and 58 partitions and with the active-student filter on and off; a planted-duplicates test (exact copies, copies differing only in a column the summary ignores, cross-file copies, rating conflicts) also matched, and was confirmed able to fail when the row hash was switched off. A full `main()` run worked in both online and `--from-file` modes.
+**Verification of the memory fix:** on real data (55 days, 282,887 rows, 33 batches) both summaries were **byte-identical** to the old all-in-memory code at 1, 15 and 58 partitions, with the active-student filter on and off; a planted-duplicates test also matched and was shown able to fail. A full `main()` run worked online and with `--from-file`.
 
-**Requires confirmation:** the real Edmingle rate-limit ceiling; whether `exclude_inactive_students: false` here is intentional; how the one existing output file was produced.
+**Requires confirmation:** the real Edmingle rate-limit ceiling; whether `exclude_inactive_students: false` here is intentional.
 
 ## 10. Error Handling & Logging
 
-`TimedRotatingFileHandler` (30-day retention) + console, IST timestamps. Custom exceptions:
-`FatalAPIError` (401/403/404/6002, no retry) and `PipelineError` (present-value/startup-validation
-failure). Exponential backoff+jitter for 429/5xx; a consecutive-error circuit breaker
-(`max_consecutive_errors`) stops the run; `is_online()` distinguishes a real internet outage
-(free retry) from an Edmingle-side failure. SIGINT/SIGTERM release the lock cleanly. Email sending
-is always best-effort and never raises. No live log exists to quote; a reconstructed example:
-`2026-09-24 00:19:43 IST | INFO     |   [2026-09-24] 42 rows fetched.` (not an actual captured line).
+`TimedRotatingFileHandler` (30-day retention) + console, IST timestamps. `FatalAPIError` (401/403/404/6002, no retry) and `PipelineError` (present-value/startup failure). Exponential backoff+jitter for 429/5xx; a consecutive-error circuit breaker (`max_consecutive_errors`) stops the run; `is_online()` separates a real internet outage (free retry) from an Edmingle-side failure. SIGINT/SIGTERM release the lock. Email is best-effort and never raises.
 
 ## 11. Dependencies
 
@@ -233,20 +186,7 @@ Docstring states: `pip install pandas requests pyyaml`.
 
 ## 12. Setup & How to Run
 
-**Step by step:**
-1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
-   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `pandas`,
-   `requests`, `pyyaml` installed, so no `pip install` step is needed.
-2. Populate `../../credentials.yaml` (`edmingle.api_key`, `edmingle.organization_id`) — shared by
-   every pipeline, so this is likely already done.
-3. Populate `../notifications.yaml` if email alerts are wanted (currently placeholders).
-4. Check `config.yaml` flags match intent (`exclude_inactive_students` is currently `false` here).
-5. `cd /home/projectdev/ela_datasets/attendance/scripts` and run one of the commands below.
-6. **For large date ranges, run inside `tmux`/`screen`.** At the pipeline's own documented rate
-   (~7.5s/day, from its 546-day/~68-minute docstring example), a multi-year range — like the
-   2020-01-01 to 2026-07-30 range behind the one output file currently in `output/` — takes
-   roughly 5 hours. Running it in a detached session avoids losing the run to an SSH disconnect.
-   A routine single-day/incremental run does not need this.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in, `config.yaml` flags checked (`exclude_inactive_students` is `false` here), `../notifications.yaml` filled in if email is wanted (currently placeholders).
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -260,27 +200,22 @@ python3 attendance.py --retry-failed
 python3 attendance.py --reset-checkpoint
 ```
 
-**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+**Run it in tmux** (session name = folder name; multi-year ranges take hours):
 
 ```
-step 1: tmux new -s attendance
-        (starts the session -- the session name is the dataset folder name)
-step 2: activate the environment, open the directory and run the script
+step 1: tmux new -s attendance          start the session (name = folder name)
+step 2: activate the venv, open the directory, run the script
         source /home/projectdev/ela_datasets/.venv/bin/activate
         cd /home/projectdev/ela_datasets/attendance/scripts
         python3 attendance.py --from 2026-08-01 --to 2026-08-31
-Ctrl+B then D                to detach / come out of the session (the script keeps running)
-tmux ls                      to see the list of active sessions
-tmux attach -t attendance      to return to / open the session
-exit                         (inside the session, when the run has finished) to close it
+Ctrl+B then D                detach (the script keeps running)
+tmux ls                      list active sessions
+tmux attach -t attendance      return to the session
 ```
 
 ## 13. Automation / Scheduling
 
-None — triggered manually. If unattended auto-restart is ever wanted, a Linux-native wrapper
-(e.g. a small shell script + `systemd`/`cron` retry) would need to be written; no such wrapper
-exists today (a stale Windows `.bat` version from a different machine was removed as dead weight
-during this doc's 2026-09-25 cleanup).
+None — triggered manually. No unattended auto-restart wrapper exists (a stale Windows `.bat` was removed on 2026-09-25).
 
 ## 14. Important Business / Technical Rules
 

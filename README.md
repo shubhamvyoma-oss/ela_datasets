@@ -1,9 +1,6 @@
 # ela_datasets
 
-Eight independent pipelines that pull data from Vyoma's Edmingle LMS API and produce CSV
-datasets — attendance, enrollments, course catalogues, and student records. Each pipeline is a
-self-contained script (or small set of scripts) run manually by an operator; there is no
-orchestration layer or scheduler.
+Eight independent pipelines that pull data from Vyoma's Edmingle LMS API into CSV datasets (attendance, enrollments, course catalogues, student records). Each is a self-contained script or small set of scripts run by an operator; there is no orchestration layer (only the monthly key rotation is scheduled).
 
 ## Contents
 
@@ -29,9 +26,7 @@ orchestration layer or scheduler.
 | `enrollments_reports/` | Row-level enrollment export over a date range | [ENROLLMENTS_REPORTS.md](enrollments_reports/ENROLLMENTS_REPORTS.md) |
 | `session_wise_attendance/` | 3-stage funnel: catalogue → class_id → per-session attendance | [SESSION_WISE_ATTENDANCE.md](session_wise_attendance/SESSION_WISE_ATTENDANCE.md) |
 
-Each linked doc is the source of truth for that pipeline: exact endpoints and why they're used,
-business rules, output schema, known limitations, and current status. This README stays
-intentionally high-level so it doesn't go stale the way per-pipeline detail would.
+Each linked doc is the source of truth for its pipeline (endpoints, business rules, schema, limitations, status); this README stays high-level.
 
 ## Quick start
 
@@ -41,9 +36,7 @@ cd <pipeline>/scripts
 python3 <script>.py [args]
 ```
 
-The venv already has every pipeline's dependencies installed. See **[RUN_GUIDE.md](RUN_GUIDE.md)**
-for the exact command for each of the 8 pipelines, tmux guidance for the long-running ones, and
-how to recreate the venv if it's ever lost.
+The venv already has every dependency. See **[RUN_GUIDE.md](RUN_GUIDE.md)** for each pipeline's command, tmux usage and how to recreate the venv; every pipeline folder also has its own step-by-step `RUN_GUIDE.md`.
 
 ## Repository layout
 
@@ -53,9 +46,10 @@ ela_datasets/
 ├── common.py                # shared helpers: credentials/notifications loading, SMTP, rate limiter
 ├── .venv/                   # shared Python environment (gitignored)
 ├── docker/                  # alternative containerized runtime
-├── RUN_GUIDE.md              # how to run each pipeline
+├── RUN_GUIDE.md              # how to run each pipeline (index)
 ├── NOTIFICATIONS.md           # local-only index of who gets emailed (gitignored)
 └── <pipeline>/
+    ├── RUN_GUIDE.md          # step-by-step run guide (+ tmux for long runs)
     ├── <PIPELINE>.md         # that pipeline's full technical documentation
     ├── notifications.yaml    # that pipeline's own SMTP/recipient config (gitignored)
     ├── scripts/              # the pipeline's code (+ its own config.yaml/*.json, if any)
@@ -67,7 +61,8 @@ ela_datasets/
 | Doc | Purpose |
 |---|---|
 | `README.md` (this file) | Project overview, setup, conventions |
-| `RUN_GUIDE.md` | Exact run command for every pipeline |
+| `RUN_GUIDE.md` | Run index + environment + tmux cheat-sheet |
+| `<pipeline>/RUN_GUIDE.md` | Step-by-step run guide for that pipeline |
 | `<pipeline>/<PIPELINE>.md` | Deep technical doc per pipeline — endpoints, schema, rules, limitations, raw payload skeleton |
 | `NOTIFICATIONS.md` | Local-only index of which pipeline emails whom (gitignored, not on GitHub) |
 
@@ -75,29 +70,10 @@ ela_datasets/
 
 - **`credentials.yaml`** (repo root, gitignored) — the one Edmingle API key/org id/institute
   id/tutor login every pipeline reads. Only `edmingle_api_key_generator` writes to it.
-- **`common.py`** (repo root) — shared code for credentials/notification loading, SMTP sending,
-  a rolling-window rate limiter, and crash-safe atomic file writes, consolidated from what used
-  to be 3–7 near-identical copies of each across pipelines. See its own docstring for the full
-  interface.
-- **`.pycache/`** (repo root, gitignored) — shared bytecode cache for every pipeline.
-- **`.venv/`** (repo root, gitignored) — shared virtual environment; see RUN_GUIDE.md.
+- **`common.py`** (repo root) — shared credentials/notification loading, SMTP sending, a rolling-window rate limiter and crash-safe atomic writes (replacing 3–7 near-identical copies of each). Entry-point scripts import it with `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` + `import common`, after setting `sys.pycache_prefix`.
+- **`.pycache/`** and **`.venv/`** (repo root, gitignored) — shared bytecode cache and virtual environment.
 
-### Working on a pipeline that uses `common.py`
-
-Any entry-point script that imports it does:
-```python
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import common
-```
-right after setting `sys.pycache_prefix` and before any other local import. All 8 pipelines use
-it for credentials/notifications loading. `enrollments_reports`, `country_wise_data`, and
-`ela_mis_datasets` also use its `RollingRateLimiter`; `edmingle_student_course_sync.py` and
-`enrollments_reports/edmingle_export.py` also use its atomic-write/`format_duration`/`utc_now`
-helpers. `attendance.py` and `session_wise_attendance/pipeline_common.py` deliberately keep their
-own rate-limiter/email-sending mechanics — see each one's own doc for exactly why (a different
-email format for `attendance.py`; a flat delay instead of a rolling window for
-`pipeline_common.py`, since forcing them together would change how those pipelines actually pace
-requests).
+`attendance.py` and `session_wise_attendance/pipeline_common.py` deliberately keep their own rate-limiter/email mechanics (an HTML email format; a flat delay instead of a rolling window) — forcing them onto `common.py` would change how they pace requests.
 
 ## Configuration & secrets
 
@@ -124,14 +100,7 @@ by pattern (`**/notifications.yaml`, `**/input/`, etc.).
 
 ## Conventions for changes
 
-- Prefer stdlib/pandas-native operations over hand-rolled loops (vectorized filters/joins over
-  `while i < len(...)` index tracking) — several pipelines were cleaned up from the latter pattern
-  and stayed behaviorally identical, verified by diffing live output before/after.
-- Comments explain *why*, not *what* — the code should read clearly enough that a comment
-  restating the next line isn't needed. Keep the ones that capture a non-obvious fact (a
-  confirmed API quirk, a bug that was fixed, a deliberate tradeoff).
-- Never invent data, row counts, or endpoint behavior in documentation — mark anything unverified
-  as `[TO CONFIRM]` rather than guessing.
-- Don't add a config file, notification channel, or abstraction a pipeline doesn't actually need
-  — several already have zero config beyond the shared `credentials.yaml`, which is correct for
-  what they do, not an inconsistency to "fix."
+- Prefer stdlib/pandas-native operations over hand-rolled index loops; verify behaviour-preserving cleanups by diffing live output before and after.
+- Comments explain *why*, not *what*; keep the ones that record a non-obvious fact (an API quirk, a fixed bug, a deliberate tradeoff).
+- Never invent data, row counts or endpoint behaviour in documentation — mark anything unverified `[TO CONFIRM]`.
+- Don't add a config file, notification channel or abstraction a pipeline doesn't need; zero config beyond `credentials.yaml` is correct for several of them.

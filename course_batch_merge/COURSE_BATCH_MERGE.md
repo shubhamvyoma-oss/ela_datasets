@@ -2,14 +2,9 @@
 
 ## 1. Overview & Purpose
 
-`Course_Batch_Merge.py` (357 lines, `course_batch_merge/scripts/`) builds one master
-course/batch report by merging the Edmingle course catalogue with masterbatch data across **all
-three** batch statuses — Active, Archived, Completed. A single-file, single-run script (no CLI
-args, no config file): fetch, merge, apply business rules, write one CSV.
+`Course_Batch_Merge.py` (`course_batch_merge/scripts/`) builds one master course/batch report by merging the Edmingle course catalogue with masterbatch data across **all three** batch statuses — Active, Archived, Completed. A single-file, single-run script (no CLI args, no config file): fetch, merge, apply business rules, write one CSV.
 
-**Purpose:** a Power-BI-ready, 41-column course/batch report including every batch regardless of
-status (unlike the separate `session_wise_attendance` catalogue builder, which uses different
-inclusion rules by design — the two are not expected to reconcile row-for-row).
+**Purpose:** a Power-BI-ready, 41-column report including every batch regardless of status (unlike the `session_wise_attendance` catalogue builder, which uses different inclusion rules by design — the two are not expected to reconcile row-for-row).
 
 ## 2. High-Level Data Flow
 
@@ -57,53 +52,24 @@ Power BI report (see Section 8) — not automated or confirmed from this repo.
 
 ## 5. Extraction Process
 
-`get_catalogue()` — one GET, empty DataFrame on non-200 (no raise). `get_all_batches()` loops
-statuses `{0: Active, 1: Archived, 3: Completed}` calling `get_batches_by_status()` for each,
-concatenating results. Each call flattens `courses[].batch[]` into rows (`bundle_id`, `batch_id`,
-`batch_name`, dates, `tutor_id` via a fallback chain flagged in-code as unconfirmed,
-`batch_enrollment_count`). `filter_test_batches()` drops rows with `"test batch"` in the name.
-The batches are left-merged onto the catalogue on `bundle_id`, `Catalogue_Match` set from the
-merge indicator. `bundle_enrollment_count` sums `batch_enrollment_count` per bundle across all
-statuses. `mark_latest_batch()` flags the newest-`start_date` row per bundle (stable-sort
-tie-break by fetch order). `apply_business_logic()` sets `Has_Batch=1`, copies catalogue `Status`
-into `Catalogue_Status`, and sets `Final_Status` = catalogue status for the latest batch only,
-`"Completed"` for every other batch of that bundle. `add_courses_without_batches()` appends one
-synthetic zero-batch row per catalogue course with no real batches. Dates convert epoch→date, the
-fixed 41-column schema is selected (missing columns logged, not silently dropped), blanks filled,
-written to CSV.
+1. `get_catalogue()` — one GET; empty DataFrame on non-200 (no raise).
+2. `get_all_batches()` — loops statuses `{0: Active, 1: Archived, 3: Completed}`, flattening `courses[].batch[]` into rows (`bundle_id`, `batch_id`, `batch_name`, dates, `tutor_id` via an unconfirmed fallback chain, `batch_enrollment_count`).
+3. `filter_test_batches()` drops names containing `"test batch"`.
+4. Batches are left-merged onto the catalogue on `bundle_id`; `Catalogue_Match` comes from the merge indicator.
+5. `bundle_enrollment_count` sums `batch_enrollment_count` per bundle across all statuses; `mark_latest_batch()` flags the newest `start_date` per bundle.
+6. `apply_business_logic()` sets `Has_Batch=1`, `Catalogue_Status`, and `Final_Status` (catalogue status for the latest batch only, `"Completed"` for the bundle's other batches).
+7. `add_courses_without_batches()` appends one synthetic row per catalogue course with no real batches.
+8. Dates convert epoch→date, the fixed 41-column schema is selected (missing columns logged), blanks filled, CSV written.
 
 ## 6. Function Reference
 
-### `get_catalogue() -> pd.DataFrame`
-Single GET to the catalogue endpoint; empty DataFrame + printed error on any non-200.
-
-### `get_batches_by_status(status_code, status_label) -> list[dict]`
-One GET (`page=1&per_page=1000`), flattens nested `courses[].batch[]` via manual index-based
-loops; `tutor_id` uses a fallback chain (`tutor_id`→`faculty_id`→`tutorId`) explicitly flagged
-in-code as unconfirmed against Edmingle's real field name.
-
-### `filter_test_batches(df) -> pd.DataFrame`
-Drops rows whose lower-cased `batch_name` contains `"test batch"` — the **only** test-data filter
-in this script (no demo/dummy/sample keyword filtering).
-
-### `mark_latest_batch(df) -> pd.DataFrame`
-Parses `start_date` as numeric (blank/unparseable → 0), sorts by `(bundle_id, date desc)`, flags
-the first row per bundle. Exact-date ties break by original fetch order (Active → Archived →
-Completed), since the sort is stable.
-
-### `apply_business_logic(df) -> pd.DataFrame`
-`Has_Batch=1` for all rows; `Final_Status` = catalogue status only for the latest batch per
-bundle, else hardcoded `"Completed"` regardless of that batch's real status.
-`Include_In_Course_Count` is computed but excluded from `OUTPUT_COLUMNS` — never reaches the CSV.
-
-### `add_courses_without_batches(merged_df, catalogue_df) -> pd.DataFrame`
-Appends one synthetic row per catalogue course with zero real batches: `Has_Batch=0`,
-`Is_Latest_Batch=1`, `Include_In_Course_Count=0`, `Catalogue_Match=True` (hardcoded, not derived).
-
-### `main()`
-Orchestrates the full run inside one broad `try/except Exception` that **prints** the error and
-returns — does not re-raise or `sys.exit(1)`, so the process exits 0 even after a mid-run failure
-(see Known Limitations).
+- **`get_catalogue()`** — single GET; empty DataFrame + printed error on any non-200.
+- **`get_batches_by_status(code, label)`** — one GET (`page=1&per_page=1000`), flattens `courses[].batch[]`; `tutor_id` falls back `tutor_id`→`faculty_id`→`tutorId` (flagged in-code as unconfirmed).
+- **`filter_test_batches(df)`** — drops lower-cased `batch_name` containing `"test batch"`; the only test-data filter.
+- **`mark_latest_batch(df)`** — parses `start_date` (blank → 0), sorts by `(bundle_id, date desc)`, flags the first per bundle; exact ties break by fetch order (Active → Archived → Completed).
+- **`apply_business_logic(df)`** — `Has_Batch=1`; `Final_Status` = catalogue status for the latest batch, else hardcoded `"Completed"`. `Include_In_Course_Count` is computed but not in `OUTPUT_COLUMNS`.
+- **`add_courses_without_batches(merged, catalogue)`** — synthetic rows: `Has_Batch=0`, `Is_Latest_Batch=1`, `Include_In_Course_Count=0`, `Catalogue_Match=True` (hardcoded).
+- **`main()`** — the whole run inside one broad `try/except` that **prints** the error and returns, so the process exits 0 even after a failure.
 
 ## 7. Configuration & Parameters
 
@@ -162,11 +128,7 @@ silently dropped; strict 41-column schema enforcement.
 
 ## 10. Error Handling & Logging
 
-`log_progress()` prints `HH:MM:SS - message` to stdout — no file logging, no rotation.
-`get_catalogue()` checks HTTP status explicitly; `get_batches_by_status()` has **no** status check
-at all (calls `.json()` unconditionally). The entire `main()` body is one broad
-`try/except Exception`, so any failure anywhere is caught, printed, and the process exits 0
-without writing a CSV. Example real log line: `11:49:39 - SUCCESS! Saved 3193 rows to file.`
+`log_progress()` prints `HH:MM:SS - message` to stdout (no log file). `get_catalogue()` checks the HTTP status; `get_batches_by_status()` does not (calls `.json()` unconditionally). `main()` is one broad `try/except Exception`: any failure is printed and the process exits 0 without writing a CSV. Example line: `11:49:39 - SUCCESS! Saved 3193 rows to file.`
 
 ## 11. Dependencies
 
@@ -179,37 +141,25 @@ without writing a CSV. Example real log line: `11:49:39 - SUCCESS! Saved 3193 ro
 
 ## 12. Setup & How to Run
 
-**Step by step:**
-1. `source /home/projectdev/ela_datasets/.venv/bin/activate` — one time per shell session. Your
-   prompt shows `(.venv)` when it's active; a plain `python3` after this already has `requests`,
-   `pandas` installed, so no `pip install` step is needed.
-2. Populate `../../credentials.yaml` (`institute_id` is loaded but unused) — shared by every
-   pipeline, likely already done. No config file, `input/` folder, or notification setup needed.
-3. `cd /home/projectdev/ela_datasets/course_batch_merge/scripts`.
-4. Run the script below. **The filename is capitalized exactly like this** —
-   `Course_Batch_Merge.py`, not `course_batch_merge.py` — Linux is case-sensitive and will error
-   with "No such file or directory" on the lowercase form.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`institute_id` is loaded but unused). No config file, `input/` folder or notification setup needed. **The filename is capitalised** — `Course_Batch_Merge.py`; Linux is case-sensitive. No CLI arguments.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/course_batch_merge/scripts
 python3 Course_Batch_Merge.py
 ```
-No CLI arguments exist.
 
-**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+**Run it in tmux** (session name = folder name; optional, it finishes in seconds):
 
 ```
-step 1: tmux new -s course_batch_merge
-        (starts the session -- the session name is the dataset folder name)
-step 2: activate the environment, open the directory and run the script
+step 1: tmux new -s course_batch_merge          start the session (name = folder name)
+step 2: activate the venv, open the directory, run the script
         source /home/projectdev/ela_datasets/.venv/bin/activate
         cd /home/projectdev/ela_datasets/course_batch_merge/scripts
         python3 Course_Batch_Merge.py
-Ctrl+B then D                to detach / come out of the session (the script keeps running)
-tmux ls                      to see the list of active sessions
-tmux attach -t course_batch_merge      to return to / open the session
-exit                         (inside the session, when the run has finished) to close it
+Ctrl+B then D                detach (the script keeps running)
+tmux ls                      list active sessions
+tmux attach -t course_batch_merge      return to the session
 ```
 
 ## 13. Automation / Scheduling
@@ -311,10 +261,7 @@ batches. This pipeline's `batch_id` is the batch object's `class_id`; `batch_enr
 }
 ```
 
-**Pagination check (2026-09-25):** `page_context.total_rows` was **835** (Active), **40** (Archived) and **12**
-(Completed) — all under the hardcoded `per_page=1000` with `has_more_page=false`, so nothing is being silently
-truncated today. Active batches are at ~83% of that cap; if they ever exceed 1,000 the excess would be lost
-because `page` never advances.
+**Pagination check (2026-09-25):** `page_context.total_rows` was 835 (Active), 40 (Archived), 12 (Completed), all under `per_page=1000` with `has_more_page=false`; nothing is truncated today, but Active is at ~83% of the cap.
 
 ## 19. Future Improvements
 

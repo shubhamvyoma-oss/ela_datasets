@@ -2,14 +2,9 @@
 
 ## 1. Overview & Purpose
 
-A single script, `edmingle_student_course_sync.py`, pulls the full Vyoma student roster and each
-student's course enrollment/attendance history from Edmingle into two CSVs. Core logic was
-originally written by Shankararama Sharma; startup checks, email alerts, crash-safe recovery, and
-the `run()` orchestration were added later.
+A single script, `edmingle_student_course_sync.py`, pulls the full Vyoma student roster and each student's course enrollment/attendance history from Edmingle into two CSVs. Core logic was written by Shankararama Sharma; startup checks, email alerts, crash-safe recovery and the `run()` orchestration were added later.
 
-**Purpose:** keep current a deduplicated student master (`edmingle_students.csv`) and a full
-rebuild of course/attendance history (`edmingle_course_enrollments.csv`), surviving multi-day
-unattended runs (crashes, restarts, SSH disconnects) without losing progress or duplicating data.
+**Purpose:** keep current a deduplicated student master (`edmingle_students.csv`) and a full rebuild of course/attendance history (`edmingle_course_enrollments.csv`), surviving multi-day unattended runs (crashes, restarts, SSH disconnects) without losing progress or duplicating data.
 
 ## 2. High-Level Data Flow
 
@@ -57,50 +52,20 @@ repo consumes them programmatically.
 
 ## 5. Extraction Process
 
-Loads config, merges in credentials, runs startup checks (≥2GB free disk; a 1-row API-key sanity
-call — 400/401/403 aborts, anything else warns and continues). Loads checkpoint; if a prior run
-left a course refresh in progress, the roster sync is **skipped entirely** and the course pull
-resumes directly. Otherwise `sync_students()` runs first: pages start `overlap_pages` (3) behind
-the last completed page (re-catching mid-run registrations), fetched rows merge into the existing
-CSV by `user_id` (last-write-wins), written atomically. `sync_courses()` then snapshots the
-current eligible students (non-empty `user_id`, not `"NA"`) and makes one attendance call per
-student in that **frozen** snapshot — never the live, possibly-changing roster. Each student's
-rows append to an in-progress file with a checkpoint saved after every student; once the full
-snapshot is processed, the file is atomically renamed onto the final CSV. Status/completion/
-failure emails fire at start, every status-update interval, on completion, and on any permanent
-error or crash.
+1. Load config, merge in credentials, run startup checks (≥2 GB free disk; a 1-row API sanity call that also reads the real student count — 400/401/403 abort, anything else warns and continues).
+2. Load the checkpoint. If a prior course refresh is in progress, the roster sync is **skipped** and the course pull resumes directly.
+3. Otherwise `sync_students()`: pages start `overlap_pages` (3) behind the last completed page (re-catching mid-run registrations); rows merge into the existing CSV by `user_id` (last write wins) and are written atomically after the last page.
+4. `sync_courses()` snapshots the eligible students (non-empty `user_id`, not `"NA"`) and makes one attendance call per student of that **frozen** snapshot, never the live roster. Rows append to an in-progress file with a checkpoint after every student; when the snapshot is done, the file is atomically renamed onto the final CSV.
+5. Status emails fire at start, every status interval, on completion, and on any permanent error or crash.
 
 ## 6. Function Reference
 
-### `run_startup_checks(config)`
-Checks ≥2GB free disk and makes a 1-row API sanity call (400/401/403 fatal, anything else warns
-and continues) before a potentially 80-hour run begins. **Note:** its own header comment claims 3
-checks including Python version; the implementation only has 2 — a documentation/code mismatch,
-not a runtime issue.
-
-### `calculate_start_page(last_completed_page, overlap_pages) -> int`
-`max(1, last_completed_page - overlap_pages)`.
-
-### `merge_students(existing_rows, fetched_rows) -> list[dict]`
-Keys by `user_id`, fetched rows overwrite existing (last-write-wins); rows with an empty
-`user_id` are dropped.
-
-### `extract_student(student) -> dict`
-Flattens one API record into `STUDENT_FIELDS`. Builds a `field_name → value` lookup from the
-variable-length `customfield_data` list, **matched by name, not position** (fixed 2026-09-23 —
-see Section 14), for `PhoneNumber`/`Age`/`LastName`.
-
-### `EdmingleSync.request_json(url, params, expected_list_key, context) -> dict`
-Rate-limited, infinitely-retried call. Network/JSON/shape errors retry forever with exponential
-backoff; `429` sleeps `rate_limit_block_seconds` (or the server's `Retry-After` if longer) and
-resets the limiter; `400/401/403/404` raise `PermanentAPIError` immediately (401 also emails an
-alert first).
-
-### `EdmingleSync.sync_students(state)` / `sync_courses(state)`
-The two orchestration methods described in Extraction Process. `sync_courses` additionally
-includes `_prepare_progress_for_resume()` (truncates the in-progress file to the last confirmed
-byte offset) and `_recover_completed_course_publication()` (handles a crash after finishing but
-before the state file updated).
+- **`run_startup_checks(config)`** — ≥2 GB free disk plus a 1-row API call (400/401/403 fatal, else warns) and reads the real student count for the time estimate. Its header comment claims 3 checks including the Python version; only 2 exist (comment/code mismatch, harmless).
+- **`calculate_start_page(last, overlap)`** — `max(1, last - overlap)`.
+- **`merge_students(existing, fetched)`** — keyed by `user_id`, fetched wins; empty `user_id` dropped.
+- **`extract_student(student)`** — flattens one record into `STUDENT_FIELDS`; `PhoneNumber`/`Age`/`LastName` come from `customfield_data` **matched by name, not position** (fixed 2026-09-23, Section 14).
+- **`EdmingleSync.request_json(...)`** — rate-limited, endlessly retried call: network/JSON/shape errors back off exponentially; `429` sleeps `rate_limit_block_seconds` (or `Retry-After`) and resets the limiter; `400/401/403/404` raise `PermanentAPIError` at once (401 emails first).
+- **`EdmingleSync.sync_students(state)` / `sync_courses(state)`** — the two phases above. `sync_courses` also has `_prepare_progress_for_resume()` (truncate to the last confirmed byte) and `_recover_completed_course_publication()` (crash after finishing but before the state file updated).
 
 ## 7. Configuration & Parameters
 
@@ -155,19 +120,12 @@ validation before trusting a page, byte-offset truncation on resume.
 
 ## 10. Error Handling & Logging
 
-Standard `logging` module → `edmingle_sync.log` + console, format
-`%(asctime)s %(levelname)s %(message)s`. Real example (confirming the last full run completed
-2026-08-28):
+`logging` → `edmingle_sync.log` + console (`%(asctime)s %(levelname)s %(message)s`). The last full run ended:
 ```
 2026-08-28 01:05:59,450 INFO Published complete course enrollment master
 2026-08-28 01:06:00,806 INFO Edmingle sync run completed
 ```
-Network/JSON/shape errors retry forever with exponential backoff; `429` waits
-`rate_limit_block_seconds` and resets the limiter; `400/401/403/404` raise `PermanentAPIError`
-immediately (401 also emails first). Any unhandled exception is logged with a full traceback, a
-`SCRIPT_FAILED.txt` marker is written to `output/`, and a failure email with resume instructions
-is sent. `KeyboardInterrupt` exits cleanly with code 130 — the checkpoint means the next run
-resumes automatically.
+Retry/permanent-error behaviour is as in Section 6. Any unhandled exception is logged with a traceback, writes `output/SCRIPT_FAILED.txt` and sends a failure email with resume instructions. `KeyboardInterrupt` exits cleanly with code 130; the checkpoint lets the next run resume.
 
 ## 11. Dependencies
 
@@ -180,33 +138,22 @@ resumes automatically.
 
 ## 12. Setup & How to Run
 
-**Before you start:**
-1. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-2. Populate `../notifications.yaml` (a hard requirement here, unlike other pipelines).
-3. Confirm `edmingle_sync_config.json` has all required keys.
-4. Ensure ≥2GB free disk before starting.
-5. A full run takes **68–80 hours** (~72 h for ~131,000 students), so it must run inside tmux — an SSH disconnect without
-   one kills a multi-day run. Detach with `Ctrl+B` then `D`; do not press Ctrl+C (in the roster phase it discards the
-   refresh; nothing is saved until the roster's last page).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in; `../notifications.yaml` populated (a hard requirement here); `edmingle_sync_config.json` has all required keys; ≥2 GB free disk. A full run takes **68–80 hours** (~72 h for ~131,000 students), so run it in tmux — an SSH disconnect without it kills a multi-day run. Detach with `Ctrl+B` then `D`; avoid Ctrl+C (during the roster phase it discards the refresh, since nothing is saved until the roster's last page).
 
-**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+**Run it in tmux** (session name = folder name):
 
 ```
-step 1: tmux new -s ela_mis_datasets
-        (starts the session -- the session name is the dataset folder name)
-step 2: activate the environment, open the directory and run the script
+step 1: tmux new -s ela_mis_datasets          start the session (name = folder name)
+step 2: activate the venv, open the directory, run the script
         source /home/projectdev/ela_datasets/.venv/bin/activate
         cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts
         python3 edmingle_student_course_sync.py
-Ctrl+B then D                to detach / come out of the session (the script keeps running)
-tmux ls                      to see the list of active sessions
-tmux attach -t ela_mis_datasets      to return to / open the session
-exit                         (inside the session, when the run has finished) to close it
+Ctrl+B then D                detach (the script keeps running)
+tmux ls                      list active sessions
+tmux attach -t ela_mis_datasets      return to the session
 ```
 
-The script is resumable: if it crashes or the session is lost, start a new session with the same three steps and re-run the
-same command — it resumes from its checkpoint. The failure email tells you to `tmux attach -t ela_mis_datasets`. Optional:
-`--config /path/to/other_config.json`. A step-by-step version is in `RUN_GUIDE.md` in this folder.
+Resumable: after a crash or lost session, start a new session and run the same command; it resumes from its checkpoint. The failure email points to `tmux attach -t ela_mis_datasets`. Optional: `--config /path/to/other_config.json`.
 
 ## 13. Automation / Scheduling
 
@@ -214,7 +161,7 @@ None — no cron/systemd/scheduler evidenced anywhere; triggered manually inside
 
 ## 14. Important Business / Technical Rules
 
-- **The 68–80 hour estimate is verified, not assumed.** One API call per eligible student (~122,000+), rate-limited to 30/min → ≈67.8 hours by calculation, matching both the script's own estimate and real log evidence (`elapsed 3d 4h 43m 13s` ≈ 76.7 hours on the last completed run).
+- **The 68–80 hour estimate is verified.** One API call per eligible student, rate-limited to 30/min: ~131,000 students ≈ 72 hours, matching the last completed run's log (`elapsed 3d 4h 43m 13s` ≈ 76.7 h).
 - Overlap-page rewind (3 pages) is safe only because the merge is last-write-wins by `user_id`.
 - The course pull is a full rebuild every run, not incremental, even though the roster sync itself is.
 - The eligible-student snapshot is frozen for the entire multi-day course pull, so a concurrent roster update can't desync it.
@@ -242,17 +189,11 @@ None — no cron/systemd/scheduler evidenced anywhere; triggered manually inside
 
 ## 17. Upstream & Downstream Dependencies
 
-**Upstream:** Edmingle's students and attendance endpoints; shared `credentials.yaml` (rotated by
-`edmingle_api_key_generator`). **Downstream:** none found within this repo — both CSVs are
-terminal outputs, consumed outside this codebase.
+**Upstream:** Edmingle's students and attendance endpoints; the shared `credentials.yaml` (rotated by `edmingle_api_key_generator`). **Downstream:** none in this repo — both CSVs are consumed outside this codebase.
 
 ## 18. Security Considerations
 
-The API key is only sent in headers, never logged/printed. SMTP credentials live in
-`../notifications.yaml` (this pipeline's own folder), not committed.
-Output CSVs contain student/parent PII (names, emails,
-phone numbers) — access to `output/` should be restricted; no access control exists in the script
-itself. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
+The API key is only sent in headers, never logged or printed. SMTP credentials live in `../notifications.yaml` (not committed). Output CSVs contain student/parent PII (names, emails, phones), so restrict access to `output/`; the script has no access control. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
 
 ## 19. Raw API Payload (Captured Structure)
 

@@ -2,14 +2,9 @@
 
 ## 1. Overview & Purpose
 
-`course_catalogue_data.py` (116 lines, `course_catalogue_data/scripts/`) is the simplest
-catalogue-domain script in `ela_datasets`: one API call, a generic `pandas.json_normalize`
-flatten, column-name cleanup, an `ingested_at` timestamp, straight to CSV. No filtering, no
-business rules — every course/bundle Edmingle returns ends up in the output.
+`course_catalogue_data.py` (`course_catalogue_data/scripts/`) is the simplest catalogue script in `ela_datasets`: one API call, a generic `pandas.json_normalize` flatten, column-name cleanup, an `ingested_at` timestamp, straight to CSV. No filtering, no business rules — every course/bundle Edmingle returns ends up in the output.
 
-**Purpose:** a raw, unfiltered, always-current catalogue snapshot with no assumptions about which
-courses matter — deliberately the "rawest" catalogue pipeline, unlike `course_batch_merge`
-(business-rule-heavy) or `session_wise_attendance`'s catalogue builder.
+**Purpose:** a raw, unfiltered, always-current catalogue snapshot — the "rawest" catalogue pipeline, unlike `course_batch_merge` (business-rule-heavy) or `session_wise_attendance`'s catalogue builder.
 
 ## 2. High-Level Data Flow
 
@@ -45,30 +40,16 @@ flowchart TD
 
 ## 5. Extraction Process
 
-`fetch_courses()` — one GET with `apikey` + hardcoded `ORGID: "683"` headers and
-`params={"org_id": ORGANIZATION_ID}`. Non-200 → prints the body, returns `[]`, and `main()` exits
-with "No data returned from API," writing nothing. On success, `response.json()["response"]`
-becomes the raw record list. `pd.json_normalize()` flattens nested dicts into dot-notation
-columns (list-valued fields are left as raw Python list objects, not expanded).
-`clean_column_names()` lower-cases names and replaces spaces with underscores — the only
-transformation applied. An `ingested_at` timestamp column is appended, and the result is written
-via `df.to_csv()` (default UTF-8, no BOM).
+1. `fetch_courses()` — one GET with `apikey` + hardcoded `ORGID: "683"` and `params={"org_id": ORGANIZATION_ID}`. Non-200 → prints the body, returns `[]`, and `main()` exits with "No data returned from API", writing nothing.
+2. `response.json()["response"]` is the record list; `pd.json_normalize()` flattens nested dicts to dot-notation columns (list-valued fields stay as raw Python lists).
+3. `clean_column_names()` lower-cases names and replaces spaces with underscores — the only transformation.
+4. An `ingested_at` column is appended and the result written with `df.to_csv()` (UTF-8, no BOM).
 
 ## 6. Function Reference
 
-### `fetch_courses() -> list`
-One GET; prints status and (on failure) the error body, returning `[]`. **No `try/except`** —
-a connection error, timeout, or non-JSON body raises unhandled and stops the script.
-
-### `clean_column_names(dataframe) -> pd.DataFrame`
-Lower-cases and underscore-izes every column name via a manual index-based loop; no other
-renaming, reordering, or dropping.
-
-### `main()`
-Fetches → builds the DataFrame with **no column filtering** (explicit code comment confirms this
-is intentional — every raw column is kept) → cleans names → appends `ingested_at` → saves →
-prints a summary (record/column counts, column list, file path). Guarded by
-`if __name__ == "__main__":` so importing the module never triggers a live call.
+- **`fetch_courses()`** — one GET; prints the status (and the error body on failure), returns `[]` on non-200. **No `try/except`**: a connection error, timeout or non-JSON body stops the script.
+- **`clean_column_names(df)`** — lower-cases and underscore-izes every column name; no other renaming, reordering or dropping.
+- **`main()`** — fetch, build the DataFrame with **no column filtering** (intentional per a code comment), clean names, add `ingested_at`, save, print a summary (record/column counts, columns, path). Guarded by `if __name__ == "__main__":`.
 
 ## 7. Configuration & Parameters
 
@@ -86,24 +67,7 @@ column Edmingle returns ends up in the output.
 
 **Output:** `course_catalogue_data.csv`, direct (non-atomic) `to_csv()`.
 
-**Confirmed state (updated 2026-09-24, after fixing the runtime environment — see Section 12):**
-**566 data rows, 61 columns**, modified 2026-09-24 15:13 UTC. This was produced by actually
-executing the current code inside a correctly-configured environment (see below) — the first
-confirmed clean run of this script on this server. It **includes** `ingested_at` as the final
-column, resolving the discrepancy previously noted in this document.
-
-Note: `wc -l` reports 34,806 lines for this file — that is **not** the row count. Several
-catalogue fields (`overview`, `about_the_course`, `product_description`, etc.) contain embedded
-newlines inside quoted CSV values, so raw line counts wildly overcount. The verified figures above
-came from the script's own printed summary and an independent check with Python's `csv` module.
-
-**Superseded prior state:** an earlier file on this server had 1,846 rows and only 22 columns,
-with no `ingested_at` column at all. That earlier file predates this audit and was almost
-certainly produced by an older revision of this script, or a different capture of the API
-response — the current code, run correctly, returns a materially wider response (61 columns,
-including large free-text fields like `overview` and `about_the_course` that the older file did
-not have). The exact origin of that earlier file remains unconfirmed; it should no longer be
-treated as representative of current output.
+**Confirmed state (2026-09-24):** **566 data rows, 61 columns**, including `ingested_at` as the last column — the first confirmed clean run on this server. `wc -l` reports 34,806 lines: that is **not** the row count, because several fields (`overview`, `about_the_course`, `product_description`, …) contain newlines inside quoted values. Use the script's printed count or Python's `csv` module. An older file (1,846 rows, 22 columns, no `ingested_at`) came from an unknown earlier revision and is not representative.
 
 **Database integration:** not applicable — CSV output only.
 
@@ -135,17 +99,14 @@ output schema, unchecked.
 - The `ORGID` header (hardcoded `"683"`) and the `org_id` query parameter (from credentials) could disagree if the real org id ever changes — unverified which one Edmingle actually honors.
 - No test/demo course filtering of any kind.
 - List-valued fields aren't flattened — unusable directly from the CSV without further parsing.
-- **`wc -l` is not a valid row-count method for this file** — several fields contain embedded newlines; use the script's own printed count or a CSV-aware tool.
-- The VPS's system Python lacks `pandas`; the script needs the project's `.venv` (or the Docker image) to run (see Section 12) — this was the root cause of the earlier file's uncertain provenance.
+- **`wc -l` is not a valid row count** (embedded newlines) — use the script's printed count or a CSV-aware tool.
+- The VPS's system Python lacks `pandas`; the script needs the project's `.venv` (or the Docker image) — Section 12.
 
-**Requires confirmation:** the exact origin of the earlier 1,846-row/22-column file; whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
+**Requires confirmation:** whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
 
 ## 10. Error Handling & Logging
 
-No `logging` module — all output via `print()` (status code, response keys, error text, summary).
-Only a non-200 HTTP status is guarded; any other failure (connection error, timeout, malformed
-JSON) raises unhandled with no top-level `try/except` anywhere in the file. Real output from the
-2026-09-24 verified run:
+No `logging` module — everything is `print()`. Only a non-200 status is guarded; any other failure raises unhandled. Output of the 2026-09-24 verified run:
 
 ```
 Status: 200
@@ -168,29 +129,17 @@ File saved at: /app/course_catalogue_data/scripts/../output/course_catalogue_dat
 
 ## 12. Setup & How to Run
 
-**The VPS's system Python does not have `pandas` installed, and neither `python3-venv` nor sudo
-is available to fix that directly.** A working virtual environment already exists at
-`/home/projectdev/ela_datasets/.venv` (see the repo-root `RUN_GUIDE.md` for how it was built and
-how to recreate it if it's ever lost) — activate it once per shell session, then run the script
-exactly as before:
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). The VPS's system Python has no `pandas` (and no `python3-venv`/sudo), so use the existing virtualenv (how it was built is in the repo-root `RUN_GUIDE.md`). Populate `../../credentials.yaml` first; no config file, `input/` or notifications needed, and no CLI arguments.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
-cd course_catalogue_data/scripts
+cd /home/projectdev/ela_datasets/course_catalogue_data/scripts
 python3 course_catalogue_data.py
 ```
-No CLI arguments exist. Populate `../../credentials.yaml` beforehand (`institute_id` loaded but
-unused); no config file, `input/` folder, or notification setup needed.
 
-**Alternative: Docker**, if you'd rather run fully isolated from the VPS's own Python:
-```bash
-docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash
-# inside the container:
-cd course_catalogue_data/scripts
-python3 course_catalogue_data.py
-```
-Output persists on the VPS after you exit the container, since the repo is volume-mounted rather
-than copied in at build time.
+Docker alternative: `docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash`, then `cd course_catalogue_data/scripts && python3 course_catalogue_data.py` (output persists on the VPS; the repo is volume-mounted).
+
+It finishes in seconds, so there is no tmux section.
 
 ## 13. Automation / Scheduling
 
@@ -219,7 +168,7 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 - **Fix the `ORGID` inconsistency** → change the hardcoded `"683"` to `str(ORGANIZATION_ID)`, once confirmed safe.
 - **Wire in `INSTITUTE_ID`** → replace the hardcoded `483` in `BASE_URL`.
 - **Add error handling** → wrap `fetch_courses()`'s request/JSON parsing in `try/except`, consider retry/backoff similar to `attendance.py`.
-- **Adding a new dependency** → `.venv/bin/pip install <package>` (venv) and add it to `docker/requirements.txt` (rebuild the image with `docker build -t ela_datasets -f docker/Dockerfile .` if Docker is used too), so both runtimes stay in sync.
+- **Adding a new dependency** → `.venv/bin/pip install <package>` and add it to `docker/requirements.txt` so both runtimes stay in sync.
 
 ## 17. Security Considerations
 
@@ -315,8 +264,4 @@ response, not by this pipeline.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24. Updated 2026-09-24 after fixing the missing runtime
-environment (VPS system Python lacked `pandas`) — first via Docker, then via a `.venv` created
-with `virtualenv.pyz` for native (non-Docker) runs — and confirming a clean run via both: 566
-rows, 61 columns, `ingested_at` present. Downstream consumer and project/technical owner:
-requires confirmation.*
+*Initial documentation: 2026-09-24; updated 2026-09-24 after fixing the runtime environment (`.venv`) and confirming a clean run (566 rows, 61 columns). Downstream consumer and project/technical owner: requires confirmation.*
