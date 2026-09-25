@@ -180,28 +180,33 @@ resumes automatically.
 
 ## 12. Setup & How to Run
 
-**Step by step:**
-1. `tmux new -s vyoma` — **start this first.** A full run takes **68–80 hours**; the failure-email
-   text itself references reattaching via `tmux attach -t vyoma`. This is the pipeline in this
-   repo most in need of a detached session — an SSH disconnect without one kills a multi-day run.
-2. Inside the tmux session: `source /home/projectdev/ela_datasets/.venv/bin/activate` — your
-   prompt shows `(.venv)` when active; a plain `python3` after this already has `requests`,
-   `pyyaml` installed, so no `pip install` step is needed.
-3. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-4. Populate `../notifications.yaml` (a hard requirement here, unlike other pipelines).
-5. Confirm `edmingle_sync_config.json` has all required keys.
-6. Ensure ≥2GB free disk before starting.
-7. `cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts` and run the command below.
-8. Detach with `Ctrl+B` then `D` (safe to close your terminal after this); reattach later with
-   `tmux attach -t vyoma` to check progress.
+**Before you start:**
+1. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
+2. Populate `../notifications.yaml` (a hard requirement here, unlike other pipelines).
+3. Confirm `edmingle_sync_config.json` has all required keys.
+4. Ensure ≥2GB free disk before starting.
+5. A full run takes **68–80 hours** (~72 h for ~131,000 students), so it must run inside tmux — an SSH disconnect without
+   one kills a multi-day run. Detach with `Ctrl+B` then `D`; do not press Ctrl+C (in the roster phase it discards the
+   refresh; nothing is saved until the roster's last page).
 
-```bash
-tmux new -s vyoma
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts
-python3 edmingle_student_course_sync.py
-# optionally: --config /path/to/other_config.json
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
 ```
+step 1: tmux new -s ela_mis_datasets
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts
+        python3 edmingle_student_course_sync.py
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t ela_mis_datasets      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
+The script is resumable: if it crashes or the session is lost, start a new session with the same three steps and re-run the
+same command — it resumes from its checkpoint. The failure email tells you to `tmux attach -t ela_mis_datasets`. Optional:
+`--config /path/to/other_config.json`. A step-by-step version is in `RUN_GUIDE.md` in this folder.
 
 ## 13. Automation / Scheduling
 

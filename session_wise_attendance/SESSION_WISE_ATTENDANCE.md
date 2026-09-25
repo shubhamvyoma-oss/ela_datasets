@@ -225,6 +225,23 @@ python3 attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end Y
 Resume after a crash/429/Ctrl+C: re-run the same command — Stages 2/3 auto-skip already-processed
 rows. `--restart` wipes prior progress. Stage 1 has no row-level resume; a crash means starting over.
 
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
+```
+step 1: tmux new -s session_wise_attendance
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
+        python3 build_course_catalog.py
+        python3 resolve_class_ids.py
+        python3 build_session_attendance.py --start 2026-01-01 --end 2026-08-31
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t session_wise_attendance      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
 ## 13. Automation / Scheduling
 
 None — no cron/systemd/scheduler; all three stages plus the spot-check tool are triggered

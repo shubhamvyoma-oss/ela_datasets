@@ -242,6 +242,23 @@ python3 dial_code_to_country.py
 python3 merge_country_data.py
 ```
 
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
+```
+step 1: tmux new -s country_wise_data
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/country_wise_data/scripts
+        python3 ip_driven_country_data.py --config ip_driven_country_data_config.json
+        python3 dial_code_to_country.py
+        python3 merge_country_data.py
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t country_wise_data      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
 ## 13. Automation / Scheduling
 
 None — all three scripts are run manually. Stage 2 additionally needs a human to drop a fresh

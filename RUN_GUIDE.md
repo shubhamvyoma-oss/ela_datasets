@@ -44,6 +44,22 @@ valid `edmingle.api_key`/`organization_id` (rotate via Section 5 below if expire
 
 ---
 
+## tmux — for anything that runs longer than a few minutes
+
+Every long-running dataset has a tmux section in its own `<dataset>/RUN_GUIDE.md`. The session name is always the dataset
+folder name (`attendance`, `country_wise_data`, `course_batch_merge`, `ela_mis_datasets`, `enrollments_reports`,
+`session_wise_attendance`):
+
+```
+tmux new -s <folder>            start a session, then activate the venv, cd to <folder>/scripts and run the script
+Ctrl+B then D                   detach (the script keeps running)
+tmux ls                         list active sessions
+tmux attach -t <folder>         go back into a session
+exit                            (inside the session, when the run is finished) close it
+```
+
+---
+
 ## 1. Attendance
 
 **Status: blocked — has never produced output. Confirm with the project owner before relying on it.**
@@ -117,11 +133,11 @@ python3 edmingle_generate_api_key.py                  # full run: rotates the li
 **Run inside `tmux` — a full run takes 68–80 hours.**
 
 ```bash
-tmux new -s vyoma
+tmux new -s ela_mis_datasets
 source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/ela_mis_datasets/scripts
 python3 edmingle_student_course_sync.py
-# detach: Ctrl+B then D — reattach later with: tmux attach -t vyoma
+# detach: Ctrl+B then D — reattach later with: tmux attach -t ela_mis_datasets
 ```
 - Resumable — if it crashes or the session is lost, just re-run the same command; it picks up from checkpoint.
 - **Check after running:** `../output/edmingle_sync.log` ends with `Edmingle sync run completed`; no `SCRIPT_FAILED.txt` in `../output/`.
@@ -133,7 +149,7 @@ python3 edmingle_student_course_sync.py
 **Status: currently blocked by a permanent API error, and has a known code defect (`send_mail` call bug) that will crash the next run's emails. Fix both before relying on this.**
 
 ```bash
-tmux new -s enrollments   # recommended for long ranges
+tmux new -s enrollments_reports   # recommended for long ranges
 source /home/projectdev/ela_datasets/.venv/bin/activate
 cd /home/projectdev/ela_datasets/enrollments_reports/scripts
 python3 edmingle_export.py --start-date <DD-MM-YYYY> --end-date <DD-MM-YYYY>

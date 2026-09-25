@@ -197,6 +197,21 @@ python3 Course_Batch_Merge.py
 ```
 No CLI arguments exist.
 
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
+```
+step 1: tmux new -s course_batch_merge
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/course_batch_merge/scripts
+        python3 Course_Batch_Merge.py
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t course_batch_merge      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
 ## 13. Automation / Scheduling
 
 None — triggered manually, no cron/systemd/Task Scheduler entry, and no restart wrapper.

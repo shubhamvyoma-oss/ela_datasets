@@ -160,28 +160,32 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 
 ## 12. Setup & How to Run
 
-**Step by step:**
-1. **Fix the `send_mail(self.config, ...)` defect (Section 9) before the next run** — as written,
-   it will crash with a `TypeError` at the first "started" email.
-2. `tmux new -s enrollments` — recommended for a long historical range, so the process survives
-   an SSH disconnect. There's no watchdog/auto-restart; a crash requires manually re-running the
-   same command (it resumes from checkpoint).
-3. Inside the session: `source /home/projectdev/ela_datasets/.venv/bin/activate` — your prompt
-   shows `(.venv)` when active; a plain `python3` after this already has `requests`, `pyyaml`
-   installed, so no `pip install` step is needed.
-4. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
-5. Populate `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
-6. `cd /home/projectdev/ela_datasets/enrollments_reports/scripts` and run the command below.
-   **Dates are `DD-MM-YYYY`** — the one pipeline in this repo that differs from every other
-   pipeline's `YYYY-MM-DD`, because it's what Edmingle's own API for this endpoint expects.
+**Before you start:**
+1. **Fix the `send_mail(self.config, ...)` defect (Section 9) before the next run** — as written, it will crash with a
+   `TypeError` at the first "started" email.
+2. Populate `../../credentials.yaml` — shared by every pipeline, likely already done.
+3. Populate `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+4. **Dates are `DD-MM-YYYY`** — the one pipeline in this repo that differs from every other pipeline's `YYYY-MM-DD`,
+   because it's what Edmingle's own API for this endpoint expects.
+5. There's no watchdog/auto-restart: a crash means running the same command again (it resumes from its checkpoint).
 
-```bash
-tmux new -s enrollments
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/enrollments_reports/scripts
-python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
 ```
-`--output` overrides the fixed default filename and its companions.
+step 1: tmux new -s enrollments_reports
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/enrollments_reports/scripts
+        python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t enrollments_reports      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
+`--output` overrides the fixed default filename and its companions. A step-by-step version is in `RUN_GUIDE.md` in this
+folder.
 
 ## 13. Automation / Scheduling
 

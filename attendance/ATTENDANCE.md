@@ -260,6 +260,21 @@ python3 attendance.py --retry-failed
 python3 attendance.py --reset-checkpoint
 ```
 
+**Run it in tmux** (session name = the dataset folder name; keeps the run going if your SSH connection drops):
+
+```
+step 1: tmux new -s attendance
+        (starts the session -- the session name is the dataset folder name)
+step 2: activate the environment, open the directory and run the script
+        source /home/projectdev/ela_datasets/.venv/bin/activate
+        cd /home/projectdev/ela_datasets/attendance/scripts
+        python3 attendance.py --from 2026-08-01 --to 2026-08-31
+Ctrl+B then D                to detach / come out of the session (the script keeps running)
+tmux ls                      to see the list of active sessions
+tmux attach -t attendance      to return to / open the session
+exit                         (inside the session, when the run has finished) to close it
+```
+
 ## 13. Automation / Scheduling
 
 None — triggered manually. If unattended auto-restart is ever wanted, a Linux-native wrapper
@@ -369,4 +384,4 @@ writes do not carry them.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24. Project/technical owner: requires confirmation.*
+*Initial documentation: 2026-09-24. Project/technical owner: shubham.*

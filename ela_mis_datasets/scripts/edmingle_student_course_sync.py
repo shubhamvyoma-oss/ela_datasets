@@ -984,7 +984,7 @@ def main() -> int:
             f"To resume:\n"
             f"  1. SSH into the VPS\n"
             f"  2. cd {SCRIPT_DIR}\n"
-            f"  3. tmux attach -t vyoma\n"
+            f"  3. tmux attach -t ela_mis_datasets\n"
             f"  4. python3 edmingle_student_course_sync.py\n"
             f"  The script will automatically resume from last checkpoint."
         )
