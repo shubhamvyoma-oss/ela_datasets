@@ -209,7 +209,7 @@ batches. This pipeline's `batch_id` is the batch object's `class_id`; `batch_enr
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "courses": [
     {

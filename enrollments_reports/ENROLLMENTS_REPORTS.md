@@ -191,7 +191,7 @@ Rows are under **`result.studentlist`**; pagination under `page_context`.
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "result": {
     "studentlist": [

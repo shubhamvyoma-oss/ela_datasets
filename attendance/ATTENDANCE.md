@@ -266,7 +266,7 @@ server's small RAM. Every record is one student-in-one-session; `studentAttendan
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "data": [
     {

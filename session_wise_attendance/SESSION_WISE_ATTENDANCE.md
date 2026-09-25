@@ -236,7 +236,7 @@ class_ids are in `class.courses_array[].class_id`.
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "class": {
     "courses_array": [
@@ -296,7 +296,7 @@ sessions inside the window. The `message` field is spelled `"Sucess"` by Edmingl
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "classes": [
     {
@@ -369,7 +369,7 @@ sessions inside the window. The `message` field is spelled `"Sucess"` by Edmingl
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "avg_attendance_data": {
     "sessions_scheduled": "<int>",

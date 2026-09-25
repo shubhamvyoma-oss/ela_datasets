@@ -230,7 +230,7 @@ no API payload. Pagination is via `page_context.has_more_page`.
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "user_list": [
     {

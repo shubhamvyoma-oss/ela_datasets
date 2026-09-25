@@ -232,7 +232,7 @@ The API key is only sent in headers, never logged or printed. SMTP credentials l
       "parent_contact_number_dial_code": "<str>"
     }
   ],
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "page_context": {
     "page": "<int>",
@@ -255,7 +255,7 @@ student. A student with no enrolled classes returns `"classes": []`.
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "classes": [
     {

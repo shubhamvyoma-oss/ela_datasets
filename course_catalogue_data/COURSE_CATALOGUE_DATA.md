@@ -183,7 +183,7 @@ response, not by this pipeline.
 
 ```json
 {
-  "code": "\"200\" (string, not int)",
+  "code": "<int> (200)",
   "message": "<str>",
   "response": [
     {
