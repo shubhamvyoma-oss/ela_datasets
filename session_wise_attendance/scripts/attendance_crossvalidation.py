@@ -35,7 +35,6 @@ session-shaping/status-classification logic.
 import argparse
 import os
 import sys
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,7 +44,6 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 import pandas as pd
-import requests
 
 # Windows console/redirect default (cp1252) can't encode many batch-name
 # characters (em-dashes, curly quotes, etc.) — force UTF-8 stdout so a
@@ -56,10 +54,11 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
     BASE_URL,
+    ApiError,
     PipelineRunLogger,
     auth_headers,
+    get_json,
     load_config,
-    parse_retry_after_seconds,
     require_config,
     resolve_output_folder,
     send_run_report,
@@ -82,53 +81,22 @@ def to_unix(date_str: str) -> int:
 
 def fetch_org_attendances(apikey: str, org_id: int, start_ts: int, end_ts: int,
                            class_id: int = None, max_retries: int = 3) -> list:
-    """Calls /organization/attendances. class_id is optional — omit for
-    an org-wide pull across the date window (heavier, use with caution
-    on wide date ranges).
-
-    RATE LIMIT: Edmingle allows max 30 calls/min. On a 429, this waits out
-    Edmingle's own reported block duration (parsed from the response
-    message) rather than retrying quickly, which just wastes retries
-    during an active block."""
-    params = {
-        "org_id": org_id,
-        "start": start_ts,
-        "end": end_ts,
-    }
+    """Calls /organization/attendances. class_id is optional — omit for an org-wide pull across the date
+    window (heavier, use with caution on wide date ranges). Returns [] if the call keeps failing.
+    RATE LIMIT: on a 429 this waits out Edmingle's own reported block duration (pipeline_common.get_json)."""
+    params = {"org_id": org_id, "start": start_ts, "end": end_ts}
     if class_id is not None:
         params["class_id"] = class_id
-
-    headers = auth_headers(apikey, org_id)
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(ORG_ATTENDANCES_ENDPOINT, params=params, headers=headers, timeout=30)
-
-            if resp.status_code == 429:
-                wait_seconds = parse_retry_after_seconds(resp.text)
-                print(f"\n[RATE LIMIT] class_id={class_id}: 429 received. "
-                      f"Waiting {wait_seconds/60:.1f} min before retrying "
-                      f"(attempt {attempt}/{max_retries})...")
-                time.sleep(wait_seconds)
-                continue
-
-            if resp.status_code >= 400:
-                # Print the actual response body — Edmingle's 400s usually explain
-                # exactly which param it didn't like, don't guess from status code alone.
-                print(f"[HTTP {resp.status_code}] Response body: {resp.text[:1000]}")
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("code") != 200:
-                print(f"[WARN] API returned non-200 code: {data.get('code')} "
-                      f"message={data.get('message')}")
-                return []
-            return data.get("classes", [])
-        except requests.exceptions.RequestException as e:
-            print(f"[RETRY {attempt}/{max_retries}] request failed: {e}")
-            if attempt < max_retries:
-                time.sleep(2 * attempt)
-    print("[ERROR] all retries exhausted, returning empty result")
-    return []
+    try:
+        data = get_json(ORG_ATTENDANCES_ENDPOINT, auth_headers(apikey, org_id), params,
+                        attempts=max_retries, label=f"class_id={class_id}")
+    except ApiError as error:
+        print(f"[ERROR] {error} -- returning empty result")
+        return []
+    if data.get("code") != 200:
+        print(f"[WARN] API returned non-200 code: {data.get('code')} message={data.get('message')}")
+        return []
+    return data.get("classes", [])
 
 
 IST_OFFSET_SECONDS = 5.5 * 3600
@@ -143,41 +111,22 @@ ATTENDANCE_DET_ENDPOINT = f"{BASE_URL}/bundle/general/attendancedet"
 
 def fetch_attendance_summary(apikey: str, org_id: int, class_id: int, start_date: str, end_date: str,
                               max_retries: int = 3) -> dict:
-    """Calls /bundle/general/attendancedet — Edmingle's own aggregated
-    scheduled/cancelled/signed-in counts for a class_id. This is the
-    'planned vs happened' summary at a glance, separate from the
-    session-by-session detail in /organization/attendances.
-    Dates must be ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."""
+    """Calls /bundle/general/attendancedet — Edmingle's own aggregated scheduled/cancelled/signed-in counts
+    for a class_id ('planned vs happened' at a glance, separate from the session-by-session detail in
+    /organization/attendances). Dates must be ISO 8601 (YYYY-MM-DDTHH:MM:SSZ). Returns {} on failure."""
     params = {
         "start_date": f"{start_date}T00:00:00Z",
         "end_date": f"{end_date}T23:59:59Z",
         "top": 1,
         "class_id": class_id,
     }
-    headers = auth_headers(apikey, org_id)
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(ATTENDANCE_DET_ENDPOINT, params=params, headers=headers, timeout=30)
-
-            if resp.status_code == 429:
-                wait_seconds = parse_retry_after_seconds(resp.text)
-                print(f"\n[RATE LIMIT] attendancedet class_id={class_id}: 429 received. "
-                      f"Waiting {wait_seconds/60:.1f} min before retrying...")
-                time.sleep(wait_seconds)
-                continue
-
-            if resp.status_code >= 400:
-                print(f"[HTTP {resp.status_code}] attendancedet response: {resp.text[:500]}")
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("avg_attendance_data", {})
-        except requests.exceptions.RequestException as e:
-            print(f"[RETRY {attempt}/{max_retries}] attendancedet request failed: {e}")
-            if attempt < max_retries:
-                time.sleep(2 * attempt)
-    print("[WARN] Could not fetch attendancedet summary — continuing without it.")
-    return {}
+    try:
+        data = get_json(ATTENDANCE_DET_ENDPOINT, auth_headers(apikey, org_id), params,
+                        attempts=max_retries, label=f"attendancedet class_id={class_id}")
+    except ApiError as error:
+        print(f"[WARN] Could not fetch attendancedet summary ({error}) — continuing without it.")
+        return {}
+    return data.get("avg_attendance_data", {})
 
 
 def unix_to_ist(ts, fmt: str = "%Y-%m-%d %H:%M:%S"):

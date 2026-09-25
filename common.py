@@ -24,16 +24,18 @@ import csv
 import json
 import logging
 import os
+import random
 import smtplib
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 
+import requests
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -189,6 +191,98 @@ class RollingRateLimiter:
 
     def reset(self) -> None:
         self.calls.clear()
+
+
+# ---------------------------------------------------------- HTTP GET with retries
+
+class ApiError(RuntimeError):
+    """An Edmingle call that did not succeed (see PermanentAPIError / RetriesExhausted)."""
+
+
+class PermanentAPIError(ApiError):
+    """A status retrying cannot fix (bad key, org id or endpoint); .status holds it."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class RetriesExhausted(ApiError):
+    """A call with a finite `attempts` kept failing."""
+
+
+def retry_after(resp: requests.Response) -> float:
+    """The response's Retry-After header in seconds, or 0."""
+    try:
+        return float(resp.headers.get("Retry-After", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_json(
+    url: str, *, headers: dict, params: dict | None = None, session: Any = None, timeout: float = 60,
+    attempts: int | None = None, delay: float = 5.0, max_delay: float = 300.0, jitter: float = 0.0,
+    permanent: Iterable[int] = (400, 401, 403, 404), block_seconds: float | Callable = 300,
+    rate_limiter: "RollingRateLimiter | None" = None, validate: Callable[[Any], bool] | None = None,
+    on_network_error: Callable[[Exception], bool] | None = None, label: str = "",
+    logger: logging.Logger | Any | None = None,
+) -> Any:
+    """GET `url` and return the parsed JSON, retrying what a retry can fix -- the one HTTP loop
+    every pipeline uses. `attempts=None` retries forever.
+
+    - permanent statuses raise PermanentAPIError at once;
+    - 429 waits `block_seconds` (a number, raised to any Retry-After header, or a function of the
+      response), resets `rate_limiter`, and counts as an attempt;
+    - other statuses, network errors, invalid JSON and `validate(data)` being false back off
+      exponentially (delay, doubling to max_delay, plus up to `jitter` seconds);
+    - `on_network_error(exc)` returning True means "handled, try again" without using an attempt
+      (e.g. after waiting for the internet to come back);
+    - after `attempts` failed attempts, RetriesExhausted is raised.
+    The API key belongs in `headers`, never in the URL, so nothing logged here can contain it."""
+    log = logger or logging.getLogger(__name__)
+    caller = session or requests
+    wait = delay
+    attempt = 0
+    while True:
+        attempt += 1
+        if rate_limiter:
+            rate_limiter.acquire()
+        try:
+            resp = caller.get(url, headers=headers, params=params, timeout=timeout)
+        except requests.RequestException as exc:
+            if on_network_error and on_network_error(exc):
+                attempt -= 1
+                continue
+            problem = f"network error ({type(exc).__name__})"
+        else:
+            if resp.status_code == 429:
+                if attempts and attempt >= attempts:
+                    raise RetriesExhausted(f"{label} rate limited (429) on every one of {attempt} attempts")
+                pause = block_seconds(resp) if callable(block_seconds) else max(block_seconds, retry_after(resp))
+                log.warning(f"{label} rate limited (429) on attempt {attempt}; waiting {pause:.0f}s")
+                time.sleep(pause)
+                if rate_limiter:
+                    rate_limiter.reset()
+                wait = delay
+                continue
+            if resp.status_code in permanent:
+                raise PermanentAPIError(f"{label} HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code)
+            if resp.status_code != 200:
+                problem = f"HTTP {resp.status_code}"
+            else:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    problem = "invalid JSON"
+                else:
+                    if validate is None or validate(data):
+                        return data
+                    problem = "unexpected response shape"
+        if attempts and attempt >= attempts:
+            raise RetriesExhausted(f"{label} failed after {attempt} attempts: {problem}")
+        log.warning(f"{label} {problem} (attempt {attempt}); retrying in {wait:.1f}s")
+        time.sleep(wait + random.uniform(0, jitter))
+        wait = min(max_delay, wait * 2)
 
 
 # --------------------------------------------------------------- file I/O

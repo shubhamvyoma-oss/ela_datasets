@@ -160,13 +160,6 @@ _BASE_URL    = common.edmingle_settings()["base_url"]
 STUDENTS_URL = f"{_BASE_URL}/organization/students"
 COURSES_URL  = f"{_BASE_URL}/admin/classes/attendance"
 
-# HTTP codes where retrying will never succeed — raise error immediately
-PERMANENT_HTTP_STATUSES = {400, 401, 403, 404}
-
-# HTTP codes that indicate a temporary issue — wait and retry
-TRANSIENT_HTTP_STATUSES = {408, 429}
-
-
 def send_email_alert(subject: str, body: str) -> None:
     # Delegates to common.send_mail() -- never raises, logs a warning and returns instead,
     # so email failure never crashes the pipeline.
@@ -303,8 +296,7 @@ def print_startup_summary(config: dict[str, Any], state: dict[str, Any]) -> None
     logger.info("=" * 50)
 
 
-class PermanentAPIError(RuntimeError):
-    """HTTP 401/403/404 -- retrying will never help."""
+PermanentAPIError = common.PermanentAPIError  # HTTP 400/401/403/404 -- retrying will never help
 
 
 # The rest of this pipeline's generic helpers (utc_now, format_duration, atomic_write_json/csv,
@@ -495,112 +487,33 @@ class EdmingleSync:
         expected_list_key: str,
         context: str,
     ) -> dict[str, Any]:
-        # Makes one API call with infinite retry and exponential backoff
-        # Returns parsed JSON response dict — never returns on permanent error
-        delay         = float(self.config["initial_retry_delay_seconds"])
-        maximum_delay = float(self.config["maximum_retry_delay_seconds"])
-        timeout       = float(self.config["request_timeout_seconds"])
-        attempt       = 0
-
-        while True:
-            attempt += 1
-            self.rate_limiter.acquire()  # wait for available rate limit slot
-
-            try:
-                response = self.session.get(
-                    url, headers=self.headers, params=params, timeout=timeout
+        # One API call with infinite retry and exponential backoff (see common.get_json).
+        # Returns the parsed JSON dict -- never returns on a permanent error.
+        try:
+            return common.get_json(
+                url, headers=self.headers, params=params, session=self.session,
+                timeout=float(self.config["request_timeout_seconds"]),
+                delay=float(self.config["initial_retry_delay_seconds"]),
+                max_delay=float(self.config["maximum_retry_delay_seconds"]),
+                block_seconds=float(self.config["rate_limit_block_seconds"]),
+                rate_limiter=self.rate_limiter,
+                validate=lambda data: isinstance(data, dict) and isinstance(data.get(expected_list_key), list),
+                label=context, logger=self.logger,
+            )
+        except PermanentAPIError as error:
+            self.logger.error(str(error))
+            # Alert immediately if the API key expired mid-run -- the most common permanent error
+            if error.status == 401:
+                send_email_alert(
+                    "[Vyoma Pipeline] STOPPED — API key expired during run",
+                    f"The script stopped because the API key expired mid-run.\n\n"
+                    f"Context : {context}\n"
+                    f"HTTP    : {error.status}\n\n"
+                    f"Action  : Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator\n"
+                    f"          rotates it on the 25th; run edmingle_generate_api_key.py if it is stale).\n"
+                    f"          Run the script again — it will resume from checkpoint."
                 )
-            except requests.RequestException as error:
-                # Network error — log and retry with exponential backoff
-                self.logger.warning(
-                    "%s request attempt %d failed: %s; retrying in %.2f seconds",
-                    context, attempt, type(error).__name__, delay,
-                )
-                time.sleep(delay)
-                delay = min(maximum_delay, delay * 2)  # double wait each retry
-                continue
-
-            if response.status_code == 429:
-                # Edmingle rate limit triggered — wait the block period before retry
-                retry_after = response.headers.get("Retry-After", "")
-                try:
-                    retry_after_seconds = float(retry_after)
-                except (TypeError, ValueError):
-                    retry_after_seconds = 0.0
-                block_seconds = max(
-                    float(self.config["rate_limit_block_seconds"]),
-                    retry_after_seconds,
-                )
-                self.logger.warning(
-                    "%s triggered HTTP 429 rate-limit lock on attempt %d; "
-                    "waiting %.2f seconds before retrying",
-                    context, attempt, block_seconds,
-                )
-                time.sleep(block_seconds)
-                self.rate_limiter.reset()  # reset call history after long pause
-                delay = float(self.config["initial_retry_delay_seconds"])
-                continue
-
-            if response.status_code in PERMANENT_HTTP_STATUSES:
-                # 401/403/404 — retrying will never help, raise error immediately
-                message = (
-                    f"{context} returned permanent HTTP {response.status_code}: "
-                    f"{response.text[:300]}"
-                )
-                self.logger.error(message)
-                # Alert immediately if API key expired mid-run — most common permanent error
-                if response.status_code == 401:
-                    send_email_alert(
-                        "[Vyoma Pipeline] STOPPED — API key expired during run",
-                        f"The script stopped because the API key expired mid-run.\n\n"
-                        f"Context : {context}\n"
-                        f"HTTP    : {response.status_code}\n\n"
-                        f"Action  : Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator\n"
-                        f"          rotates it on the 25th; run edmingle_generate_api_key.py if it is stale).\n"
-                        f"          Run the script again — it will resume from checkpoint."
-                    )
-                raise PermanentAPIError(message)
-
-            if response.status_code != 200:
-                # Other non-200 — classify as transient or retryable and retry
-                classification = (
-                    "transient"
-                    if response.status_code in TRANSIENT_HTTP_STATUSES
-                    or response.status_code >= 500
-                    else "retryable"
-                )
-                self.logger.warning(
-                    "%s returned %s HTTP %d on attempt %d; retrying in %.2f seconds",
-                    context, classification, response.status_code, attempt, delay,
-                )
-                time.sleep(delay)
-                delay = min(maximum_delay, delay * 2)
-                continue
-
-            try:
-                data = response.json()
-            except (ValueError, json.JSONDecodeError) as error:
-                # Malformed JSON — retry
-                self.logger.warning(
-                    "%s returned invalid JSON on attempt %d: %s; retrying in %.2f seconds",
-                    context, attempt, error, delay,
-                )
-                time.sleep(delay)
-                delay = min(maximum_delay, delay * 2)
-                continue
-
-            if not isinstance(data, dict) or not isinstance(data.get(expected_list_key), list):
-                # Wrong response structure — retry
-                self.logger.warning(
-                    "%s returned an invalid response shape on attempt %d; "
-                    "retrying in %.2f seconds",
-                    context, attempt, delay,
-                )
-                time.sleep(delay)
-                delay = min(maximum_delay, delay * 2)
-                continue
-
-            return data  # successful response
+            raise
 
     def sync_students(self, state: dict[str, Any]) -> None:
         # Fetches all student pages from Edmingle and updates student master CSV

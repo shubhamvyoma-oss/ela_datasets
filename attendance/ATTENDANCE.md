@@ -84,7 +84,7 @@ automatically.
 ## 6. Function Reference
 
 - **`load_config(path)`** — merges `config.yaml` over defaults, injects credentials/notifications, validates required keys, anchors relative paths to the script's folder.
-- **`fetch_one_day(...)`** — one day with retry/backoff: `200` parsed; `429` waits `Retry-After` or backoff+jitter; `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. On timeout it checks `is_online()`: if the internet is down it waits and retries the same date for free. Raises `ValueError` when retries run out.
+- **`fetch_one_day(...)`** — one day through `common.get_json` (retry/backoff): `200` parsed; `429` waits `Retry-After` + 2 s (30 s if the header is absent); `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. On timeout it checks `is_online()`: if the internet is down it waits and retries the same date for free. Raises `ValueError` when retries run out.
 - **`resolve_session_id_column(...)`** — `attendance_id`, else `class_Id` with a warning (undercounts sessions: `class_Id` is a subject id, not a session).
 - **`filter_active_students(...)`** — allow-list on `studentBatchStatus` (default `["Active"]`), togglable.
 - **`clean_data(...)`** — parses `classDate`, drops unparseable/duplicate/key-incomplete rows, logs (keeps) conflicting `(student_Id, session)` pairs, filters students, derives `_class_datetime`.

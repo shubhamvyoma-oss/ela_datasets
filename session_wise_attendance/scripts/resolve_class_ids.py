@@ -32,7 +32,6 @@ USAGE
 import argparse
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -42,7 +41,6 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 import pandas as pd
-import requests
 
 # Windows console/redirect default (cp1252) can't encode many batch-name
 # characters (em-dashes, curly quotes, etc.) — force UTF-8 stdout so a
@@ -53,11 +51,12 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
     BASE_URL,
+    ApiError,
     PipelineRunLogger,
     RateLimiter,
     auth_headers,
+    get_json,
     load_config,
-    parse_retry_after_seconds,
     require_config,
     resolve_output_folder,
     send_run_report,
@@ -77,54 +76,18 @@ OUTPUT_COLUMNS = [
 DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
 
 
-def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int,
-                             max_retries: int = 2, debug: bool = False) -> list:
-    """Calls GET /masterbatch/<batchId>. On 429, waits out Edmingle's own
-    reported block duration rather than retrying instantly — instant
-    retries during an active IP block just waste time and risk extending it.
-    debug=True prints the full raw response regardless of outcome — used
-    for the very first call of a run to diagnose silent empty-result issues."""
-    url = f"{MASTERBATCH_ENDPOINT}/{batch_id}"
-    headers = auth_headers(apikey, org_id)
-    params = {"org_id": org_id}
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(url, params=params, headers=headers, timeout=30)
-
-            if debug:
-                print(f"\n[DEBUG] GET {resp.url}")
-                print(f"[DEBUG] status_code={resp.status_code}")
-                print(f"[DEBUG] raw response body (first 2000 chars):\n{resp.text[:2000]}\n")
-
-            if resp.status_code == 429:
-                wait_seconds = parse_retry_after_seconds(resp.text)
-                print(f"\n[RATE LIMIT] batch_id={batch_id}: "
-                      f"429 received. Waiting {wait_seconds/60:.1f} min before retrying "
-                      f"(attempt {attempt}/{max_retries})...")
-                time.sleep(wait_seconds)
-                continue
-
-            if resp.status_code >= 400:
-                print(f"[HTTP {resp.status_code}] batch_id={batch_id} "
-                      f"response: {resp.text[:300]}")
-            resp.raise_for_status()
-            data = resp.json()
-            # Real response shape (confirmed live, Edmingle's docs were wrong): the top-level
-            # "class_id" is actually the BATCH id -- real subject-level class_ids are nested
-            # under class.courses_array[].
-            class_obj = data.get("class", {})
-            return class_obj.get("courses_array", [])
-
-        except requests.exceptions.RequestException as e:
-            print(f"[RETRY {attempt}/{max_retries}] batch_id={batch_id} "
-                  f"request failed: {e}")
-            if attempt < max_retries:
-                time.sleep(5)
-
-    print(f"[WARN] Could not resolve class_ids for batch_id={batch_id} "
-          f"after {max_retries} attempts.")
-    return []
+def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int, max_retries: int = 2) -> list:
+    """GET /masterbatch/<batchId> -> the subject-level class records, or [] if the call keeps failing.
+    A 429 waits out Edmingle's own reported block duration (see pipeline_common.get_json)."""
+    try:
+        data = get_json(f"{MASTERBATCH_ENDPOINT}/{batch_id}", auth_headers(apikey, org_id), {"org_id": org_id},
+                        attempts=max_retries, label=f"batch_id={batch_id}")
+    except ApiError as error:
+        print(f"[WARN] Could not resolve class_ids for batch_id={batch_id}: {error}")
+        return []
+    # Real response shape (confirmed live, Edmingle's docs were wrong): the top-level "class_id" is
+    # actually the BATCH id -- real subject-level class_ids are nested under class.courses_array[].
+    return data.get("class", {}).get("courses_array", [])
 
 
 def courses_array_to_records(courses_array: list) -> list:
@@ -250,7 +213,7 @@ def main():
             print(f"  [{i}/{n_batches}] batch_id={batch_id} ({row.batch_name})")
 
             limiter.start()
-            courses_array = fetch_classes_for_batch(apikey, org_id, batch_id, debug=(i == 1))
+            courses_array = fetch_classes_for_batch(apikey, org_id, batch_id)
             class_records = courses_array_to_records(courses_array)
 
             if not class_records:

@@ -34,7 +34,7 @@ intended consumers, and don't exist yet.
 
 | Path | Purpose |
 |---|---|
-| `scripts/pipeline_common.py` | Shared helpers — config/credentials, 429 backoff parsing, output-folder resolution, a flat-delay `RateLimiter`, `PipelineRunLogger`, `send_run_report()`. |
+| `scripts/pipeline_common.py` | Shared helpers — config/credentials, `get_json()` (`common.get_json` with this pipeline's defaults), 429 backoff parsing, output-folder resolution, a flat-delay `RateLimiter`, `PipelineRunLogger`, `send_run_report()`. |
 | `scripts/build_course_catalog.py` | **Stage 1** — `course_catalog.csv`. |
 | `scripts/resolve_class_ids.py` | **Stage 2** — `class_id_lookup.csv`. |
 | `scripts/build_session_attendance.py` | **Stage 3** — `session_wise_attendance_data.csv`. |
@@ -68,7 +68,7 @@ intended consumers, and don't exist yet.
 ## 6. Function Reference
 
 - **`mark_latest_batch` / `apply_business_logic` / `compute_bundle_enrollment` (Stage 1)** — sort by `(bundle_id, start_date desc, batch_id desc)` and flag the first row per bundle as latest; `Final_Status` defaults to `"Completed"`, overridden by the catalogue status only for the latest batch (if Completed/Ongoing/Upcoming); `bundle_enrollment_count` is a `groupby().sum()` broadcast onto every row.
-- **`fetch_classes_for_batch(...)` (Stage 2)** — one `/masterbatch/<batch_id>` call; 429 waits Edmingle's reported duration, other errors retry up to `max_retries` with a flat 5 s delay; logs the full raw response on the first call to help diagnose silent empty results.
+- **`fetch_classes_for_batch(...)` (Stage 2)** — one `/masterbatch/<batch_id>` call; uses `get_json`: 429 waits Edmingle's reported duration, other errors retry up to `max_retries` (2) with a 2/4/8 s backoff, and it returns `[]` if the call keeps failing. (The old debug dump of the raw response on a run's first call was removed 2026-09-25.)
 - **`fetch_org_attendances(...)` / `sessions_to_dataframe(...)`** (in `attendance_crossvalidation.py`, imported by Stage 3) — fetch raw session dicts (header *and* query-param auth); convert UTC unix timestamps to IST with a manual `+5:30` offset (raw UTC is never written); derive `session_conducted` (`status not in {2,3}`); number sessions chronologically per `master_batch_id`.
 - **`resolve_output_folder(...)` / `PipelineRunLogger`** (in `pipeline_common.py`) — output is anchored to `<script folder>/../output`; the logger mirrors every `print()` into a timestamped log, marking `[RUN START]`/`[RUN END]`/`[RUN FAILED]`.
 
@@ -143,7 +143,7 @@ Entirely `print()`-based; `PipelineRunLogger` mirrors output into `output/logs/<
 [TOTAL] 11984 session rows across 427 class_ids -- Conducted: 10848  Not conducted: 1136
 [WARN] Email report failed for build_session_attendance: (535, b'5.7.8 Username and Password not accepted...')
 ```
-429s wait Edmingle's own cooldown; other failures retry 2–3 times with short flat delays, then log `[WARN]`/`[ERROR]` (no infinite retry, unlike `ela_mis_datasets`/`enrollments_reports`). `send_run_report()` is best-effort: a missing SMTP config or auth failure only logs a warning.
+429s wait Edmingle's own cooldown; other failures retry 2–3 times with a short exponential backoff (400/401/403/404 fail at once instead of being retried), then log `[WARN]`/`[ERROR]` (no infinite retry, unlike `ela_mis_datasets`/`enrollments_reports`). `send_run_report()` is best-effort: a missing SMTP config or auth failure only logs a warning.
 
 ## 11. Dependencies
 

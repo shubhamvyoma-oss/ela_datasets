@@ -64,7 +64,7 @@ repo consumes them programmatically.
 - **`calculate_start_page(last, overlap)`** — `max(1, last - overlap)`.
 - **`merge_students(existing, fetched)`** — keyed by `user_id`, fetched wins; empty `user_id` dropped.
 - **`extract_student(student)`** — flattens one record into `STUDENT_FIELDS`; `PhoneNumber`/`Age`/`LastName` come from `customfield_data` **matched by name, not position** (fixed 2026-09-23, Section 14).
-- **`EdmingleSync.request_json(...)`** — rate-limited, endlessly retried call: network/JSON/shape errors back off exponentially; `429` sleeps `rate_limit_block_seconds` (or `Retry-After`) and resets the limiter; `400/401/403/404` raise `PermanentAPIError` at once (401 emails first).
+- **`EdmingleSync.request_json(...)`** — a thin wrapper over `common.get_json` (the repo's one HTTP retry loop): rate-limited, endlessly retried; network/JSON/shape errors back off exponentially; `429` sleeps `rate_limit_block_seconds` (or `Retry-After`) and resets the limiter; `400/401/403/404` raise `PermanentAPIError` at once (401 emails first).
 - **`EdmingleSync.sync_students(state)` / `sync_courses(state)`** — the two phases above. `sync_courses` also has `_prepare_progress_for_resume()` (truncate to the last confirmed byte) and `_recover_completed_course_publication()` (crash after finishing but before the state file updated).
 
 ## 7. Configuration & Parameters
@@ -73,7 +73,7 @@ repo consumes them programmatically.
 - **Config file:** `overlap_pages` (3), `students_per_page` (500), `max_calls_per_minute` (30), `request_timeout_seconds` (30), `initial_retry_delay_seconds` (5), `maximum_retry_delay_seconds` (300), `rate_limit_block_seconds` (1800), and an output-filename map (all resolved against `OUTPUT_DIR` regardless of invocation cwd).
 - **`../../credentials.yaml`:** `api_key`, `organization_id` — required, missing/malformed is fatal.
 - **`notifications.yaml`:** email config + `status_update_interval_hours` (default 6h) — a missing file is a **hard failure** for this script specifically (unlike `common.load_notifications()`'s own "missing = disabled" default elsewhere).
-- **Hardcoded:** `PERMANENT_HTTP_STATUSES={400,401,403,404}`, `TRANSIENT_HTTP_STATUSES={408,429}`.
+- **Hardcoded:** none — the permanent statuses (400/401/403/404) are `common.get_json`'s defaults.
 
 ## 8. Data Transformation, Output & Schema
 

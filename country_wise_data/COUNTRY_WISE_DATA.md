@@ -79,7 +79,7 @@ flowchart TD
 
 ## 6. Function Reference
 
-- **`fetch_page(...)`** — one page with retry: 5 attempts, backoff on transient errors, 300 s cooldown + limiter reset on `429`, immediate `None` on 400/401/403/404.
+- **`fetch_page(...)`** — one page via `common.get_json`: 5 attempts, backoff on transient errors, 300 s cooldown + limiter reset on `429`, immediate `None` on 400/401/403/404.
 - **`run_collection(cfg, script_dir)`** — the full paginated pull; on a fresh run the byte offset starts at the header's size so the header is never truncated.
 - **`save_checkpoint(...)` / `truncate_to_offset(...)`** — atomic checkpoint (`.tmp` + `os.replace()`); cuts the CSV back to the last confirmed byte offset. File ops retry `PermissionError`/`OSError` up to 6 times.
 - **`dial_code_to_country(raw)`** — normalizes (`-`, `N/A`, `null` → blank), strips `+`, falls back to a leading digit run, looks up the region with `phonenumbers` (first region for shared codes like `+1`/`+44`/`+7`), converts via `pycountry`; cached.

@@ -30,7 +30,6 @@ USAGE
 import argparse
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -40,15 +39,15 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 import pandas as pd
-import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
     BASE_URL,
+    ApiError,
     PipelineRunLogger,
     RateLimiter,
+    get_json,
     load_config,
-    parse_retry_after_seconds,
     require_config,
     resolve_output_folder,
     send_run_report,
@@ -131,50 +130,16 @@ def log_progress(message):
     print(f"{now} - {message}")
 
 
-def _request_with_retry(url, headers, params=None, max_retries=3, label=""):
-    """Shared GET-with-429/backoff wrapper for both catalogue and batch calls."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            if response.status_code == 429:
-                wait_seconds = parse_retry_after_seconds(response.text)
-                print(f"\n[RATE LIMIT] {label}: 429 received. "
-                      f"Waiting {wait_seconds/60:.1f} min before retrying "
-                      f"(attempt {attempt}/{max_retries})...")
-                time.sleep(wait_seconds)
-                continue
-            return response
-        except requests.exceptions.RequestException as e:
-            print(f"[RETRY {attempt}/{max_retries}] {label} request failed: {e}")
-            if attempt < max_retries:
-                time.sleep(2 * attempt)
-    print(f"[ERROR] {label} exhausted retries.")
-    return None
-
-
 def get_catalogue(institute_id, headers):
     log_progress("Fetching Course Catalogue...")
     url = f"{BASE_URL}/institute/{institute_id}/courses/catalogue?institution_id={institute_id}"
-    response = _request_with_retry(url, headers, label="catalogue")
-
-    if response is None or response.status_code != 200:
-        print("Error fetching catalogue!")
-        if response is not None:
-            print("Status Code:", response.status_code)
-            print("Response body:", response.text[:500])
-            print("Tip: If 400/401, the API key may have rotated — update edmingle.api_key in ../../credentials.yaml.")
+    try:
+        data = get_json(url, headers, label="catalogue")
+    except ApiError as error:
+        print(f"Error fetching catalogue! {error}")
+        print("Tip: If 400/401, the API key may have rotated — update edmingle.api_key in ../../credentials.yaml.")
         return pd.DataFrame()
-
-    # Guard against HTML response (wrong URL resolving to web page)
-    content_type = response.headers.get("Content-Type", "")
-    if "text/html" in content_type:
-        print("Error: Catalogue endpoint returned HTML, not JSON. Check the URL.")
-        return pd.DataFrame()
-
-    data = response.json()
-    rows = data.get("response", [])
-
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(data.get("response", []))
     log_progress(f"Catalogue fetched: {len(df)} rows")
     return df
 
@@ -188,20 +153,17 @@ def get_batches_by_status(status_code, status_label, org_id, headers, limiter: R
 
     while True:
         limiter.start()
-        url = (
-            f"{batches_url}"
-            f"?status={status_code}"
-            f"&page={page}"
-            f"&per_page=1000"
-            f"&organization_id={org_id}"
-        )
-        response = _request_with_retry(url, headers, label=f"batches page={page} status={status_label}")
+        params = {"status": status_code, "page": page, "per_page": 1000, "organization_id": org_id}
+        try:
+            data = get_json(batches_url, headers, params, label=f"batches page={page} status={status_label}")
+        except ApiError as error:
+            print(f"[ERROR] {error}")
+            data = None
         limiter.wait()  # rate-limit spacing regardless of success/failure
 
-        if response is None:
+        if data is None:
             break
 
-        data = response.json()
         courses = data.get("courses", [])
 
         if not courses:

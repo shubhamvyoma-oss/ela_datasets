@@ -60,6 +60,7 @@ import json
 import os
 import sys
 import time
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -108,7 +109,6 @@ def epoch_to_ist_str(epoch_value) -> str:
         return ""
     return datetime.fromtimestamp(ts, tz=IST).strftime("%d-%m-%Y %H:%M:%S")
 
-PERMANENT_ERROR_CODES = {400, 401, 403, 404}
 TRANSIENT_ERROR_COOLDOWN_SECONDS = 300  # known 429 penalty-state behavior
 MAX_RETRIES_PER_PAGE = 5
 REQUEST_TIMEOUT_SECONDS = 90
@@ -281,10 +281,13 @@ def append_rows(csv_path: Path, rows: list) -> int:
 # API call
 # --------------------------------------------------------------------------
 
+_LOG = SimpleNamespace(warning=lambda msg: log(msg), error=lambda msg: log(msg))  # logger shape common.get_json expects
+
+
 def fetch_page(session, base_url, apikey, orgid, filter_key, sort_order,
                start_date, end_date, per_page, page, rate_limiter):
-    url = f"{base_url}/user/useranalyticslist"
-    headers = {"apikey": apikey, "ORGID": str(orgid)}
+    """One page of /user/useranalyticslist (common.get_json: up to MAX_RETRIES_PER_PAGE attempts, a
+    TRANSIENT_ERROR_COOLDOWN_SECONDS wait on 429), or None if it kept failing."""
     params = {
         "page": page,
         "per_page": per_page,
@@ -294,44 +297,15 @@ def fetch_page(session, base_url, apikey, orgid, filter_key, sort_order,
         "start_date": start_date,
         "end_date": end_date,
     }
-
-    attempt = 0
-    while attempt < MAX_RETRIES_PER_PAGE:
-        attempt += 1
-        rate_limiter.acquire()
-        try:
-            resp = session.get(url, headers=headers, params=params,
-                                timeout=REQUEST_TIMEOUT_SECONDS)
-        except requests.RequestException as e:
-            log(f"  [page {page}] network error (attempt {attempt}): {e} -- retrying")
-            time.sleep(min(5 * attempt, 30))
-            continue
-
-        if resp.status_code == 200:
-            try:
-                return resp.json()
-            except ValueError:
-                log(f"  [page {page}] 200 but non-JSON body -- treating as failed")
-                return None
-
-        if resp.status_code == 429:
-            log(f"  [page {page}] 429 rate limited -- cooling down "
-                f"{TRANSIENT_ERROR_COOLDOWN_SECONDS}s and resetting limiter")
-            time.sleep(TRANSIENT_ERROR_COOLDOWN_SECONDS)
-            rate_limiter.reset()
-            continue
-
-        if resp.status_code in PERMANENT_ERROR_CODES:
-            log(f"  [page {page}] permanent error {resp.status_code}: "
-                f"{resp.text[:200]}")
-            return None
-
-        log(f"  [page {page}] transient error {resp.status_code} "
-            f"(attempt {attempt}): {resp.text[:200]}")
-        time.sleep(min(5 * attempt, 30))
-
-    log(f"  [page {page}] giving up after {MAX_RETRIES_PER_PAGE} attempts")
-    return None
+    try:
+        return common.get_json(
+            f"{base_url}/user/useranalyticslist", headers={"apikey": apikey, "ORGID": str(orgid)}, params=params,
+            session=session, timeout=REQUEST_TIMEOUT_SECONDS, attempts=MAX_RETRIES_PER_PAGE, delay=5, max_delay=30,
+            block_seconds=TRANSIENT_ERROR_COOLDOWN_SECONDS, rate_limiter=rate_limiter, label=f"  [page {page}]", logger=_LOG,
+        )
+    except common.ApiError as error:
+        log(f"  [page {page}] giving up: {error}")
+        return None
 
 
 # --------------------------------------------------------------------------

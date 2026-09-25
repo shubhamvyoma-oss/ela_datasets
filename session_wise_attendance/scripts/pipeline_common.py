@@ -8,6 +8,7 @@ USAGE
     from pipeline_common import (
         load_config, parse_retry_after_seconds, resolve_output_folder,
         RateLimiter, PipelineRunLogger, send_run_report, BASE_URL, auth_headers, require_config,
+        get_json, ApiError,
     )
 """
 
@@ -194,14 +195,10 @@ class PipelineRunLogger:
         return False  # never swallow exceptions — let the script's own error handling see them
 
 
-class _PrintLogger:
-    """Minimal logging.Logger-like shim (just .info()/.warning()) so
-    common.send_mail()'s log lines come out as this pipeline's existing
-    print()-based [INFO]/[WARN] lines. This pipeline has never used the
-    `logging` module -- everything goes through print(), which
-    PipelineRunLogger already mirrors into the run's log file -- so this
-    keeps send_run_report()'s console/log output in the same style instead
-    of introducing a second, differently-formatted logging path."""
+class PrintLogger:
+    """Minimal logging.Logger-like shim so common.send_mail() and common.get_json() log through
+    print() -- this pipeline has no `logging` setup; PipelineRunLogger mirrors print() into the run's
+    log file."""
 
     @staticmethod
     def info(msg, *args, **kwargs):
@@ -210,6 +207,22 @@ class _PrintLogger:
     @staticmethod
     def warning(msg, *args, **kwargs):
         print(f"[WARN] {msg}")
+
+    @staticmethod
+    def error(msg, *args, **kwargs):
+        print(f"[ERROR] {msg}")
+
+
+ApiError = common.ApiError
+
+
+def get_json(url: str, headers: dict, params: dict | None = None, attempts: int = 3, label: str = "") -> dict:
+    """common.get_json with this pipeline's defaults: short backoff, and a 429 waits out Edmingle's own
+    reported cool-down. Raises ApiError when the call cannot succeed."""
+    return common.get_json(
+        url, headers=headers, params=params, timeout=30, attempts=attempts, delay=2, max_delay=8,
+        block_seconds=lambda resp: parse_retry_after_seconds(resp.text), label=label, logger=PrintLogger,
+    )
 
 
 def send_run_report(stage_name: str, summary: dict, config: dict):
@@ -232,4 +245,4 @@ def send_run_report(stage_name: str, summary: dict, config: dict):
     subject = f"[Vyoma Pipeline] {stage_name} - {status} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
 
     notifications = config.get("_notifications") or {}
-    common.send_mail(notifications, subject, body, _PrintLogger())
+    common.send_mail(notifications, subject, body, PrintLogger())

@@ -1,4 +1,4 @@
-# Enrollments Reports — Historical Enrollment Export
+# Enrollments Reports
 
 ## 1. Overview & Purpose
 
@@ -39,7 +39,7 @@ within this repo consumes it.
 | Path | Purpose |
 |---|---|
 | `scripts/edmingle_export.py` | Orchestrator — config, checkpoint, logging, the `EdmingleExportRun` class. |
-| `scripts/edmingle_api.py` | `fetch_page()` — one (chunk, page) GET with error classification and 429 backoff. |
+| `scripts/edmingle_api.py` | `fetch_page()` — one (chunk, page) GET through `common.get_json` (error classification, 429 backoff). |
 | `scripts/edmingle_chunker.py` | Splits a date range into `chunk_days` windows, persisted to `.chunks.json`. |
 | `scripts/edmingle_constants.py` | `ENROLLMENT_PATH` (appended to `credentials.yaml`'s `base_url`), date format, output column order, HTTP status sets. |
 | `scripts/edmingle_io_utils.py` | `truncate_to_offset()` plus re-exported `common.py` helpers. |
@@ -65,7 +65,7 @@ within this repo consumes it.
 
 ## 6. Function Reference
 
-- **`fetch_page(...)`** — one page for one chunk. Network/JSON/shape errors retry forever with exponential backoff; `429` sleeps `max(rate_limit_block_seconds, Retry-After)` and resets the limiter; `400/401/403/404` raise `PermanentAPIError`.
+- **`fetch_page(...)`** — one page for one chunk, via `common.get_json`. Network/JSON/shape errors retry forever with exponential backoff; `429` sleeps `max(rate_limit_block_seconds, Retry-After)` and resets the limiter; `400/401/403/404` raise `PermanentAPIError`.
 - **`build_chunks(start, end, chunk_days)`** — fixed windows; `sys.exit` if `start > end`.
 - **`load_or_create_chunk_plan(...)`** — reuses the persisted plan if start/end/chunk_days match, else regenerates and persists.
 - **`truncate_to_offset(path, offset)`** — truncates to a known-good byte offset (`r+b`), then flush + `fsync`.

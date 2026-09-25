@@ -101,7 +101,6 @@ class EdmingleExportRun:
         api_key: str | None = None,
         org_id: int | None = None,
         session: requests.Session | None = None,
-        sleep=time.sleep,
         logger=None,
     ) -> None:
         credentials_path = SCRIPT_DIR.parent.parent / "credentials.yaml"
@@ -132,7 +131,6 @@ class EdmingleExportRun:
 
         self.logger = logger or setup_logging(self.log_path)
         self.session = session or requests.Session()
-        self.sleep = sleep
         self.rate_limiter = RollingRateLimiter(
             int(self.config["max_calls_per_minute"]), 60.0, self.logger,
         )
@@ -249,7 +247,6 @@ class EdmingleExportRun:
                         rate_limit_block_seconds=float(self.config["rate_limit_block_seconds"]),
                         rate_limiter=self.rate_limiter,
                         logger=self.logger,
-                        sleep_fn=self.sleep,
                     )
 
                     rows = payload["result"]["studentlist"]

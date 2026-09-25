@@ -545,7 +545,7 @@ def fetch_one_day(
 ) -> pd.DataFrame:
     """
     Returns a DataFrame on success (possibly empty for 0-row days).
-    Raises FatalAPIError for 401 / 403 / 404.
+    Raises FatalAPIError for 401 / 403 / 404 / Edmingle 6002.
     Raises ValueError when all retries are exhausted.
     """
     if dry_run:
@@ -569,157 +569,57 @@ def fetch_one_day(
                                         for i in range(rows)],
         })
 
-    api_cfg    = cfg["api"]
-    max_r      = api_cfg["max_retries"]
-    back_base  = api_cfg["retry_backoff_base_seconds"]
-    back_max   = api_cfg["retry_backoff_max_seconds"]
-    jitter_max = api_cfg["retry_jitter_seconds"]
-    params     = _day_params(date_str, cfg)
+    api_cfg = cfg["api"]
 
-    wait_reconnect = api_cfg.get("wait_for_reconnect", True)
-    attempt = 0
-    while attempt < max_r:
-        attempt += 1
-        try:
-            resp = session.get(api_cfg["url"], params=params,
-                               headers=common.auth_headers(api_cfg["key"], api_cfg["org_id"]),
-                               timeout=api_cfg["timeout_seconds"])
+    def internet_down(_exc) -> bool:
+        # A real outage is not this date's fault: wait for the connection, then retry the same date
+        # without using up an attempt.
+        if api_cfg.get("wait_for_reconnect", True) and not is_online(cfg):
+            wait_for_connection(cfg, log, context=f"[{date_str}]")
+            return True
+        return False
 
-            # ── HTTP status ──────────────────────────────────────────────
-            if resp.status_code == 200:
-                pass  # continue to JSON parsing
+    def usable(data) -> bool:  # rows, or an Edmingle 6001/6002 code handled below
+        return isinstance(data, dict) and (
+            "data" in data or str(data.get("error_code") or data.get("code") or "") in ("6001", "6002"))
 
-            elif resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after:
-                    sleep_s = int(retry_after) + 2
-                    log.warning(
-                        f"  [{date_str}] 429 rate-limited. "
-                        f"Retry-After={retry_after}s. Sleeping {sleep_s}s."
-                    )
-                else:
-                    sleep_s = min(
-                        back_base * (2 ** attempt) + random.uniform(0, jitter_max),
-                        back_max,
-                    )
-                    log.warning(
-                        f"  [{date_str}] 429 rate-limited (no header). "
-                        f"Backoff {sleep_s:.1f}s (attempt {attempt}/{max_r})."
-                    )
-                time.sleep(sleep_s)
-                continue
-
-            elif resp.status_code == 401:
-                msg = "HTTP 401 Unauthorised -- check edmingle.api_key and edmingle.organization_id in the shared credentials.yaml."
-                log.critical(f"  [{date_str}] {msg}")
-                raise FatalAPIError(msg)
-
-            elif resp.status_code == 403:
-                msg = "HTTP 403 Forbidden -- API key lacks permission for this endpoint."
-                log.critical(f"  [{date_str}] {msg}")
-                raise FatalAPIError(msg)
-
-            elif resp.status_code == 404:
-                msg = "HTTP 404 -- endpoint not found. Check api.url in config.yaml."
-                log.critical(f"  [{date_str}] {msg}")
-                raise FatalAPIError(msg)
-
-            elif resp.status_code == 400:
-                log.error(
-                    f"  [{date_str}] HTTP 400 Bad Request. "
-                    f"Response: {resp.text[:300]}. Skipping date."
-                )
-                return pd.DataFrame()   # bad params; skip, do not retry
-
-            elif resp.status_code >= 500:
-                sleep_s = min(
-                    back_base * (2 ** attempt) + random.uniform(0, jitter_max), back_max
-                )
-                log.warning(
-                    f"  [{date_str}] HTTP {resp.status_code} server error. "
-                    f"Backoff {sleep_s:.1f}s (attempt {attempt}/{max_r})."
-                )
-                time.sleep(sleep_s)
-                continue
-
-            else:
-                log.error(
-                    f"  [{date_str}] Unexpected HTTP {resp.status_code} "
-                    f"(attempt {attempt}/{max_r}). Body: {resp.text[:200]}"
-                )
-                time.sleep(back_base)
-                continue
-
-            # ── JSON parsing ─────────────────────────────────────────────
-            try:
-                data = resp.json()
-            except ValueError:
-                log.error(
-                    f"  [{date_str}] Non-JSON response (attempt {attempt}/{max_r}): "
-                    f"{resp.text[:200]}"
-                )
-                time.sleep(back_base)
-                continue
-
-            # ── Edmingle application-level error codes ────────────────────
-            err_code = str(data.get("error_code") or data.get("code") or "")
-            if err_code == "6001":
-                log.error(
-                    f"  [{date_str}] Edmingle 6001 (invalid params): "
-                    f"{data.get('message', '')}. Skipping."
-                )
-                return pd.DataFrame()
-            if err_code == "6002":
-                msg = f"Edmingle 6002 (auth failure): {data.get('message', '')}"
-                log.critical(f"  [{date_str}] {msg}")
-                raise FatalAPIError(msg)
-
-            if "data" not in data:
-                log.error(
-                    f"  [{date_str}] No 'data' key in response "
-                    f"(attempt {attempt}/{max_r}): {str(data)[:300]}"
-                )
-                time.sleep(back_base)
-                continue
-
-            rows = data["data"]
-            if not rows:
-                log.info(f"  [{date_str}] 0 rows (quiet day / no sessions).")
-                return pd.DataFrame()
-
-            df = pd.DataFrame(rows)
-            log.info(f"  [{date_str}] {len(df):,} rows fetched.")
-            return df
-
-        except FatalAPIError:
-            raise
-        except (requests.exceptions.Timeout,
-                requests.exceptions.ConnectionError) as e:
-            # ── Is this a real internet outage, or just a flaky call? ────
-            if wait_reconnect and not is_online(cfg):
-                # Internet is DOWN: this is not the API's fault and not
-                # this date's fault. Wait for reconnect, then retry the
-                # same date WITHOUT consuming a retry attempt.
-                wait_for_connection(cfg, log, context=f"[{date_str}]")
-                attempt -= 1
-                continue
-            # Internet is up but the call failed (transient blip or the
-            # Edmingle server itself is unreachable) -> normal backoff,
-            # attempt IS consumed, circuit breaker still protects us.
-            kind    = "Timeout" if isinstance(e, requests.exceptions.Timeout) else "Connection error"
-            sleep_s = min(back_base * (2 ** attempt) + random.uniform(0, jitter_max), back_max)
-            err_msg = str(e).replace(str(api_cfg["key"]), "***APIKEY***")[:250]
-            log.warning(
-                f"  [{date_str}] {kind} while online (attempt {attempt}/{max_r}): "
-                f"{err_msg}. Backoff {sleep_s:.1f}s."
-            )
-            time.sleep(sleep_s)
-        except requests.exceptions.RequestException as e:
-            log.error(f"  [{date_str}] Request exception: {e}. Skipping.")
+    try:
+        data = common.get_json(
+            api_cfg["url"], headers=common.auth_headers(api_cfg["key"], api_cfg["org_id"]),
+            params=_day_params(date_str, cfg), session=session, timeout=api_cfg["timeout_seconds"],
+            attempts=api_cfg["max_retries"], delay=api_cfg["retry_backoff_base_seconds"],
+            max_delay=api_cfg["retry_backoff_max_seconds"], jitter=api_cfg["retry_jitter_seconds"],
+            block_seconds=lambda r: common.retry_after(r) + 2 if r.headers.get("Retry-After") else 30,
+            validate=usable, on_network_error=internet_down, label=f"  [{date_str}]", logger=log,
+        )
+    except common.PermanentAPIError as e:
+        if e.status == 400:  # bad params for this date: skip it, don't retry
+            log.error(f"{e}. Skipping date.")
             return pd.DataFrame()
+        msg = f"{e} -- check edmingle.api_key / organization_id in credentials.yaml and the API url"
+        log.critical(msg)
+        raise FatalAPIError(msg) from e
+    except common.RetriesExhausted as e:
+        log.error(str(e))
+        raise ValueError(str(e)) from e  # run_pull_loop counts this as a failed date
 
-    log.error(f"  [{date_str}] All {max_r} attempts exhausted.")
-    raise ValueError(f"All retries exhausted for {date_str}")
+    err_code = str(data.get("error_code") or data.get("code") or "")
+    if err_code == "6001":
+        log.error(f"  [{date_str}] Edmingle 6001 (invalid params): {data.get('message', '')}. Skipping.")
+        return pd.DataFrame()
+    if err_code == "6002":
+        msg = f"Edmingle 6002 (auth failure): {data.get('message', '')}"
+        log.critical(f"  [{date_str}] {msg}")
+        raise FatalAPIError(msg)
+
+    rows = data["data"]
+    if not rows:
+        log.info(f"  [{date_str}] 0 rows (quiet day / no sessions).")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    log.info(f"  [{date_str}] {len(df):,} rows fetched.")
+    return df
 
 
 def validate_api_connection(session: requests.Session, cfg: dict, log: logging.Logger):

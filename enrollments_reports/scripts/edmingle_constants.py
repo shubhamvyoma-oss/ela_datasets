@@ -37,8 +37,3 @@ FIELDS = [
     "shipping_details_json",
     "preferred_categories",
 ]
-
-# Permanent: retrying will never fix these (bad key, bad org id, wrong URL).
-# Transient: worth retrying with backoff (or, for 429, a longer cool-down).
-PERMANENT_HTTP_STATUSES = {400, 401, 403, 404}
-TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
