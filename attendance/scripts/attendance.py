@@ -882,47 +882,160 @@ def run_pull_loop(
     return successful_files
 
 
-# ── COMBINE STAGING FILES ──
+# ── SUMMARISE STAGING FILES (memory-bounded) ──
 
-def combine_staging_files(
-    file_paths: list, cfg: dict, label: str, log: logging.Logger
-) -> pd.DataFrame:
+# Columns the cleaning/summary code actually reads. Everything else in a staging file is dropped, but
+# folded into _ROW_HASH first so clean_data()'s exact-duplicate removal behaves as if every column were kept.
+_NEEDED_COLUMNS = [
+    "classDate", "startTime", "batch_Id", "student_Id", "studentBatchStatus", "studentAttendanceStatus",
+    "studentRating", "batchName", "bundle_Id", "bundleName", "course_Id", "courseName", "teacher_Id",
+    "teacherName",
+]
+_ROW_HASH = "_row_hash"
+_PARTITION_RAW_BYTES = 150 * 1024 ** 2    # raw CSV bytes per partition -- keeps one partition well under 1 GB of RAM
+_SPILL_DISK_FRACTION = 0.5                # the pruned spill files are roughly half the size of the raw ones
+
+
+def _row_hash(raw: pd.DataFrame) -> pd.Series:
+    """64-bit hash of the WHOLE original row (as int64 so it survives a CSV round trip)."""
+    hashed = pd.util.hash_pandas_object(raw.astype(str), index=False).to_numpy()
+    return pd.Series(hashed.view("int64"), index=raw.index)
+
+
+def _summarise(df: pd.DataFrame, session_col: str, cfg: dict, log: logging.Logger, validate: bool = True):
+    """Clean + summarise one frame. Returns (batch summary, session-wise frame or None, statuses seen)."""
+    clean    = clean_data(df, session_col, cfg, log)
+    observed = set(clean["studentAttendanceStatus"].dropna().unique())
+    if validate:
+        validate_present_value(clean, cfg)
+    summary    = compute_batch_summary(clean, session_col, cfg)
+    session_df = (build_session_wise_output(clean, session_col, cfg)
+                  if cfg["pipeline"].get("write_session_wise_csv", True) else None)
+    return summary, session_df, observed
+
+
+def summarise_frame(raw_df: pd.DataFrame, cfg: dict, log: logging.Logger):
+    """The whole raw dataset is already in memory (--from-file)."""
+    session_col = resolve_session_id_column(raw_df, cfg, log)
+    summary, session_df, _ = _summarise(raw_df, session_col, cfg, log)
+    return summary, session_df
+
+
+def summarise_staging_files(file_paths: list, cfg: dict, label: str, log: logging.Logger,
+                            part_bytes: int = _PARTITION_RAW_BYTES):
+    """Same result as concatenating every staging file and summarising the lot, without ever holding
+    more than one partition in memory (the full set is ~10 million rows and does not fit in RAM).
+
+    Pass 1 reads each staging file once and spills its rows, reduced to the columns that are used, into
+    partition files keyed by batch_Id. Every metric is per batch, so a batch is always summarised whole.
+    Pass 2 summarises one partition at a time with the unchanged clean/summary functions and joins the
+    (small) results. Returns (batch summary, session-wise frame or None, total raw rows read)."""
+    import shutil
+
     if not file_paths:
         raise PipelineError("No staging files to combine.")
+    paths       = sorted(file_paths)
+    total_bytes = sum(Path(p).stat().st_size for p in paths)
+    n_parts     = max(1, -(-total_bytes // part_bytes))
+    out_dir     = Path(cfg["paths"]["output_folder"])
+    spill_dir   = out_dir / "_spill"
 
-    log.info(f"Combining {len(file_paths)} staging file(s)...")
-    frames = []
-    for p in sorted(file_paths):
-        try:
-            frames.append(pd.read_csv(p, low_memory=False))
-        except Exception as e:
-            log.warning(f"Could not read {p}: {e}. Skipping.")
-
-    if not frames:
-        raise PipelineError("All staging files were unreadable.")
-
-    combined = pd.concat(frames, ignore_index=True)
-    log.info(f"Combined: {len(combined):,} rows from {len(frames)} file(s).")
-
-    if cfg["pipeline"]["save_combined_raw_csv"]:
-        ts       = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
-        out_path = (
-            Path(cfg["paths"]["output_folder"])
-            / f"attendance_raw_{label}_{ts}.csv"
+    reserve = cfg["pipeline"]["min_free_disk_mb"] * 1024 ** 2
+    free    = shutil.disk_usage(out_dir).free
+    need    = int(total_bytes * _SPILL_DISK_FRACTION) + reserve
+    if free < need:
+        raise PipelineError(
+            f"Not enough disk to summarise {len(paths)} staging files ({total_bytes / 1e9:.1f} GB): "
+            f"{free / 1e9:.1f} GB free, need about {need / 1e9:.1f} GB for temporary partition files."
         )
-        combined.to_csv(out_path, index=False, encoding="utf-8-sig")
-        log.info(f"Combined raw CSV saved: {out_path}")
 
-    if cfg["pipeline"]["cleanup_staging_after_combine"]:
-        removed = 0
-        for p in file_paths:
+    raw_path = None
+    if cfg["pipeline"]["save_combined_raw_csv"]:
+        if free >= total_bytes + need:
+            ts       = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+            raw_path = out_dir / f"attendance_raw_{label}_{ts}.csv"
+        else:
+            log.warning(
+                f"Skipping the combined raw CSV: it would be ~{total_bytes / 1e9:.1f} GB and only "
+                f"{free / 1e9:.1f} GB is free. The per-day files in the staging folder are the raw data."
+            )
+
+    log.info(f"Summarising {len(paths)} staging file(s), {total_bytes / 1e9:.2f} GB, in {n_parts} partition(s)...")
+    if spill_dir.exists():
+        shutil.rmtree(spill_dir)
+    spill_dir.mkdir(parents=True)
+
+    total_rows, session_col, cols, raw_fh, wrote_header = 0, None, None, None, False
+    try:
+        if raw_path:
+            raw_fh = open(raw_path, "w", encoding="utf-8-sig", newline="")
+
+        # ── Pass 1: split by batch, keep only the columns that are used ──
+        for i, p in enumerate(paths, start=1):
             try:
-                Path(p).unlink(); removed += 1
-            except OSError:
-                pass
-        log.info(f"Removed {removed} staging file(s).")
+                raw = pd.read_csv(p, low_memory=False)
+            except Exception as e:
+                log.warning(f"Could not read {p}: {e}. Skipping.")
+                continue
+            if session_col is None:
+                session_col = resolve_session_id_column(raw, cfg, log)
+                cols        = list(dict.fromkeys(_NEEDED_COLUMNS + [session_col]))
+            total_rows += len(raw)
+            if raw_fh is not None:
+                raw.to_csv(raw_fh, index=False, header=not wrote_header)
+                wrote_header = True
 
-    return combined
+            kept            = raw.reindex(columns=cols)
+            kept[_ROW_HASH] = _row_hash(raw)
+            batch_ids       = pd.to_numeric(kept["batch_Id"], errors="coerce").fillna(0).astype("int64")
+            for part, chunk in kept.groupby((batch_ids % n_parts).to_numpy()):
+                spill = spill_dir / f"part_{int(part):04d}.csv"
+                chunk.to_csv(spill, mode="a", header=not spill.exists(), index=False)
+            if i % 250 == 0:
+                log.info(f"  read {i}/{len(paths)} staging files ({total_rows:,} rows)")
+
+        if session_col is None:
+            raise PipelineError("All staging files were unreadable.")
+        if raw_fh is not None:
+            raw_fh.close()
+            raw_fh = None
+            log.info(f"Combined raw CSV saved: {raw_path}")
+        log.info(f"Read {total_rows:,} rows.")
+
+        # ── Pass 2: one partition at a time ──
+        summaries, sessions, observed = [], [], set()
+        spills = sorted(spill_dir.glob("part_*.csv"))
+        for n, spill in enumerate(spills, start=1):
+            log.info(f"Summarising partition {n}/{len(spills)}...")
+            part = pd.read_csv(spill, low_memory=False)
+            summary, session_df, seen = _summarise(part, session_col, cfg, log, validate=False)
+            del part
+            summaries.append(summary)
+            if session_df is not None:
+                sessions.append(session_df)
+            observed |= seen
+    finally:
+        if raw_fh is not None:
+            raw_fh.close()
+        shutil.rmtree(spill_dir, ignore_errors=True)
+
+    validate_present_value(pd.DataFrame({"studentAttendanceStatus": sorted(observed)}), cfg)
+    # Restore the row order a single whole-dataset run produces (batch order), so later sorts tie-break identically.
+    summary    = pd.concat(summaries, ignore_index=True).sort_values("batch_Id").reset_index(drop=True)
+    session_df = (pd.concat(sessions, ignore_index=True).sort_values(["batch_Id", "session_number"]).reset_index(drop=True)
+                  if sessions else None)
+    return summary, session_df, total_rows
+
+
+def remove_staging_files(file_paths: list, log: logging.Logger):
+    removed = 0
+    for p in file_paths:
+        try:
+            Path(p).unlink()
+            removed += 1
+        except OSError:
+            pass
+    log.info(f"Removed {removed} staging file(s).")
 
 
 # ── CLEAN + VALIDATE ──
@@ -1233,6 +1346,10 @@ def main():
             log.info(f"--from-file: loading {args.from_file}")
             raw_df = pd.read_csv(args.from_file, low_memory=False)
             label  = Path(args.from_file).stem
+            staging_files = []
+            log.info("Running batch attendance summary...")
+            summary, session_df = summarise_frame(raw_df, cfg, log)
+            total_rows = len(raw_df)
 
         # ── Online mode ──────────────────────────────────────────────────
         else:
@@ -1277,15 +1394,10 @@ def main():
                 lock.release()
                 sys.exit(0)
 
-            raw_df = combine_staging_files(staging_files, cfg, label, log)
+            log.info("Running batch attendance summary...")
+            summary, session_df, total_rows = summarise_staging_files(staging_files, cfg, label, log)
 
-        # ── Summary ──────────────────────────────────────────────────────
-        log.info("Running batch attendance summary...")
-        session_col = resolve_session_id_column(raw_df, cfg, log)
-        clean       = clean_data(raw_df, session_col, cfg, log)
-        validate_present_value(clean, cfg)
-
-        summary = compute_batch_summary(clean, session_col, cfg)
+        # ── Outputs ──────────────────────────────────────────────────────
         summary = summary.sort_values("batchName").reset_index(drop=True)
 
         ts           = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
@@ -1297,8 +1409,7 @@ def main():
         log.info(f"Summary: {len(summary):,} batches -- {summary_path}")
 
         session_path = None
-        if cfg["pipeline"].get("write_session_wise_csv", True):
-            session_df = build_session_wise_output(clean, session_col, cfg)
+        if session_df is not None:
             session_df = session_df.sort_values(
                 ["batchName", "session_number"]
             ).reset_index(drop=True)
@@ -1312,6 +1423,9 @@ def main():
                 f"{session_df['batch_Id'].nunique():,} batches -- {session_path}"
             )
 
+        if cfg["pipeline"]["cleanup_staging_after_combine"] and staging_files:
+            remove_staging_files(staging_files, log)
+
         # ── Completion ────────────────────────────────────────────────────
         elapsed = (datetime.now(IST) - run_start).total_seconds()
         stats = {
@@ -1320,7 +1434,7 @@ def main():
                                     if cfg["pipeline"].get("exclude_inactive_students", True)
                                     else "All statuses"),
             "Batches in summary":  str(len(summary)),
-            "Total raw rows":      f"{len(raw_df):,}",
+            "Total raw rows":      f"{total_rows:,}",
             "Summary file":        str(summary_path),
             "Session-wise file":   str(session_path) if session_path else "disabled",
             "Elapsed":             f"{elapsed / 60:.1f} minutes",

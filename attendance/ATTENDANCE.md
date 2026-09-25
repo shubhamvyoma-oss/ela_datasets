@@ -31,8 +31,8 @@ flowchart TD
     K -->|internet down| O[is_online/wait_for_connection: pause, probe, resume same date, no retry/breaker cost]
     L --> P{more dates?}
     P -->|yes| J
-    P -->|no| Q[combine_staging_files -> raw DataFrame]
-    Q --> R[clean_data: drop bad dates, dedupe, key-col check, filter_active_students]
+    P -->|no| Q["summarise_staging_files: split rows by batch into ~150 MB<br/>partition files, then one partition at a time"]
+    Q --> R["per partition: clean_data: drop bad dates, dedupe, key-col check, filter_active_students"]
     R --> S[resolve_session_id_column: attendance_id, fallback class_Id]
     S --> T[validate_present_value: abort run if 'P' never appears]
     T --> U[build_class_summary: per batch+session aggregates, session_number, is_conducted]
@@ -43,7 +43,7 @@ flowchart TD
     X --> Y[LockFile released, checkpoint left intact]
 ```
 
-**Lineage:** Edmingle API → per-day staging CSVs → combined DataFrame → `clean_data()` →
+**Lineage:** Edmingle API → per-day staging CSVs → batch partitions (temporary spill files) → `clean_data()` →
 `build_class_summary()` → the two output CSVs. No downstream system in this repo consumes them
 automatically.
 
@@ -54,7 +54,7 @@ automatically.
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
 | `scripts/config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
 | `../notifications.yaml` | SMTP + recipients + alert-granularity toggles (this pipeline's own folder, a sibling of `scripts/`). |
-| `output/` | Summaries, `staging/`, `logs/`, checkpoint, lock file. |
+| `output/` | Summaries, `staging/`, `logs/`, checkpoint, lock file, and a temporary `_spill/` folder while summarising (deleted afterwards). |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
 | `../../common.py` | Shared credentials/notifications loader — not used for this pipeline's own SMTP/rate-limit code. |
 
@@ -78,7 +78,7 @@ automatically.
 8. Checkpoint skips already-`success` dates (unless `--retry-failed`/`--reset-checkpoint`).
 9. `run_pull_loop()` calls `fetch_one_day()` per date — handles 200/429/401/403/404/400/5xx/Edmingle 6001/6002, network-outage detection, backoff, and a consecutive-error circuit breaker.
 10. Each fetched day writes to `staging/raw_<date>.csv`; checkpoint updates immediately (crash-safe).
-11. `combine_staging_files()` concatenates staging into one raw DataFrame (or `--from-file` skips extraction entirely).
+11. `summarise_staging_files()` reads every staging file **once** and writes only the columns the summary uses (plus a hash of the whole original row) into ~150 MB partition files keyed by `batch_Id`; steps 12–15 then run **once per partition** and the small results are joined. Every metric is per batch, so each batch is summarised whole and the output is identical to processing everything at once. (`--from-file` skips extraction and loads the one file in memory, as before.)
 12. `clean_data()` — parses dates, dedupes, drops rows missing key columns, flags (doesn't drop) conflicting rows, filters inactive students.
 13. `resolve_session_id_column()` — `attendance_id`, falling back to `class_Id` with a warning.
 14. `validate_present_value()` — aborts the run if `"P"` never appears.
@@ -151,7 +151,7 @@ flag · present-value abort check · per-session→per-batch aggregation.
 |---|---|
 | `batch_attendance_summary_<label>_<ts>.csv` | Direct `to_csv`, not atomic. |
 | `session_wise_attendance_<label>_<ts>.csv` | Only if `write_session_wise_csv` (default true, unset here). |
-| `attendance_raw_<label>_<ts>.csv` | Only if `save_combined_raw_csv` (true here). |
+| `attendance_raw_<label>_<ts>.csv` | Only if `save_combined_raw_csv` (true here) **and** there is enough free disk; otherwise skipped with a warning, since it just duplicates `staging/`. Written file by file. |
 | `staging/raw_<date>.csv` | One per fetched day; enables resume. |
 | `pipeline_checkpoint.json` | Per-date status, atomic write. |
 
@@ -200,7 +200,12 @@ validation.
 - `--config` default resolves against the caller's cwd, not the script folder — fails if run from elsewhere without an explicit path.
 - `notifications.yaml` still has placeholder SMTP credentials/recipients with alerts enabled — no real email will arrive until filled in.
 - The one file in `output/` has no supporting staging/log/checkpoint trail — provenance unconfirmed.
+- **Memory (fixed 2026-09-25).** The pipeline used to load every staging file into one DataFrame. The 2020-01-01 → 2026-08-31 run (2,260 days, ~5.6 GB, ~10M rows) died at that step after ~8 hours on this 3.9 GB server and produced no output; the old approach needed roughly 2.3× the data size in RAM (an estimate from a measured 204 MB peak on 53 MB of data). It now uses about 330 MB regardless of range (measured on 649k rows) — but it needs about **half the staging size in free disk** for temporary files, checked up front, and it can only be relied on for a full 2,260-day run once someone has done one (only a ~4-month sample was tested end to end).
+- `cleanup_staging_after_combine` now removes the staging files after the summary files are written (it used to remove them first, so a failed summary lost the raw data). The `clean_data()` log lines repeat once per partition on a large run.
+- Because the combined raw CSV is now written one staging file at a time, a column's number formatting can differ slightly from a single-DataFrame write (e.g. `5` vs `5.0` when a column is blank in some days).
 - `EmailNotifier` uses its own HTML-email code, separate from `common.send_mail()` (plain text) — routing this pipeline through the shared function later would break the HTML formatting unless that function is extended first.
+
+**Verification of the memory fix (2026-09-25):** on real data (55 days, 282,887 rows, 33 batches) the summary and session-wise CSVs were **byte-identical** to the previous all-in-memory code, at 1, 15 and 58 partitions and with the active-student filter on and off; a planted-duplicates test (exact copies, copies differing only in a column the summary ignores, cross-file copies, rating conflicts) also matched, and was confirmed able to fail when the row hash was switched off. A full `main()` run worked in both online and `--from-file` modes.
 
 **Requires confirmation:** the real Edmingle rate-limit ceiling; whether `exclude_inactive_students: false` here is intentional; how the one existing output file was produced.
 
