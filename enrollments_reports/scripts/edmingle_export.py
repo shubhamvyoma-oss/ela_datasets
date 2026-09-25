@@ -202,7 +202,6 @@ class EdmingleExportRun:
                           f"max_calls_per_minute={self.config['max_calls_per_minute']}")
 
         send_mail(
-            self.config,
             subject=f"Edmingle export {'resumed' if is_resume else 'started'}",
             body=(f"{'Resumed' if is_resume else 'Started'} pulling enrollment data "
                   f"{self.start_date} -> {self.end_date} in {len(chunks)} chunk(s) of "
@@ -297,7 +296,6 @@ class EdmingleExportRun:
         self.logger.info(f"Done. Wrote {total_written:,} rows total to {self.output_path}")
 
         send_mail(
-            self.config,
             subject="Edmingle export completed",
             body=(f"Finished pulling enrollment data {self.start_date} -> {self.end_date} "
                   f"across {len(chunks)} chunk(s) of {self.config['chunk_days']} days each.\n"

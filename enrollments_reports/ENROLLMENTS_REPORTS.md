@@ -4,7 +4,7 @@
 
 Pulls row-level enrollment records from Edmingle's `/reports/enrollment` endpoint over a historical date range into one CSV. Edmingle rejects large single-shot ranges, so the range is split into fixed-size day "chunks", fetched page by page, with every page checkpointed so an interrupted run resumes exactly where it stopped.
 
-**As of the 2026-09-24 audit this pipeline is in a blocked/failed state** — see Section 9.
+**Status:** the last logged run (2026-09-23) stopped on a permanent API error, and the `send_mail` defect found in the 2026-09-24 audit was fixed on 2026-09-25 — see Section 9.
 
 **Purpose:** one historical enrollment-level CSV for an operator-specified range, resumable across crashes without re-fetching or duplicating rows.
 
@@ -104,7 +104,7 @@ truncation before resuming, null→empty-string handling.
 
 **Confirmed limitations:**
 - **Blocked at the last run.** The live log ends with `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error` (a 400/401/403/404, no retry). Last successful run: **2026-09-08 06:02:23**, 8,572 rows for August 2026 (`completed: true`). API access with the current key worked when tested on 2026-09-25, so the cause was probably the earlier key.
-- **Code defect that will block the next run:** `EdmingleExportRun.run()` (edited 2026-09-23) calls `send_mail(self.config, subject=..., body=..., logger=...)` for the start/resume and completion emails — an extra positional argument that raises `TypeError: send_mail() got multiple values for argument 'subject'` when reached. The failure handlers in `main()` are fine. Not yet seen in a log (the last logged run predates the edit). **Not fixed.**
+- **`send_mail` defect — fixed 2026-09-25.** `EdmingleExportRun.run()` passed an extra `self.config` argument to the start/resume and completion emails, which raised `TypeError: send_mail() got multiple values for argument 'subject'`. The two call sites now match the wrapper's `(subject, body, logger)` signature. Verified by running `run()` end to end with a stubbed API and email: both emails are sent (the old code raised the `TypeError` on the same test). No real Edmingle call or email was made in that test.
 - **An unexplained 115 MB file** (`edmingle_enrollment_01012010_25082026.csv`, 450,797 lines) has no checkpoint/chunks/log, follows the old naming pattern, and is inconsistent with the 30 calls/min limit (its creation-to-modify window is ~22 s). Origin unconfirmed.
 - No de-duplication across chunk boundaries or repeated overlapping-range runs.
 
@@ -112,7 +112,7 @@ truncation before resuming, null→empty-string handling.
 
 ## 10. Error Handling & Logging
 
-`logging.basicConfig` (`%(asctime)s [%(levelname)s] %(message)s`) to the log file and stdout. Last real line: `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error`. `PermanentAPIError` is caught in `main()`, logged, emailed, exit 1 (a human must fix it). Other exceptions are logged with a traceback, emailed with resume instructions, exit 1. `KeyboardInterrupt` exits 130 and resumes automatically next run. The `send_mail` defect (Section 9) makes the started/completion emails fail until fixed.
+`logging.basicConfig` (`%(asctime)s [%(levelname)s] %(message)s`) to the log file and stdout. Last real line: `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error`. `PermanentAPIError` is caught in `main()`, logged, emailed, exit 1 (a human must fix it). Other exceptions are logged with a traceback, emailed with resume instructions, exit 1. `KeyboardInterrupt` exits 130 and resumes automatically next run.
 
 ## 11. Dependencies
 
@@ -128,10 +128,9 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 ## 12. Setup & How to Run
 
 Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running:
-1. **Fix the `send_mail(self.config, ...)` defect (Section 9)** — otherwise the first "started" email crashes the run.
-2. Fill in `../../credentials.yaml`; fill in `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
-3. **Dates are `DD-MM-YYYY`** — unlike every other pipeline (`YYYY-MM-DD`), because that is what Edmingle's endpoint expects.
-4. No watchdog: a crash means running the same command again (it resumes). `--output` overrides the fixed default filename and its companions.
+1. Fill in `../../credentials.yaml`; fill in `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+2. **Dates are `DD-MM-YYYY`** — unlike every other pipeline (`YYYY-MM-DD`), because that is what Edmingle's endpoint expects.
+3. No watchdog: a crash means running the same command again (it resumes). `--output` overrides the fixed default filename and its companions.
 
 **Run it in tmux** (session name = folder name; long ranges take hours):
 
@@ -163,14 +162,13 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 | Scenario | Likely cause | Check |
 |---|---|---|
 | "Edmingle export stopped: permanent API error" | 400/401/403/404 from Edmingle | `api_key`/`organization_id`; rotate via `edmingle_api_key_generator` if expired, re-run |
-| `TypeError: send_mail() got multiple values for argument 'subject'` | The known code defect | Fix the two `send_mail(self.config, ...)` call sites in `EdmingleExportRun.run()` |
+| `TypeError: send_mail() got multiple values for argument 'subject'` | The old defect (fixed 2026-09-25) — means an old copy of the script is running | Update `edmingle_export.py` from the repo |
 | "this exact run already completed" | Re-running identical start/end dates | Delete `.checkpoint.json`, or use a different range |
 | Run appears to hang on one chunk | Active 429 cooldown | Check the log for "rate limited (429)" — expected pacing, not a hang |
 | Output row count looks short after a crash | Expected — resume truncates to last confirmed offset | Compare `total_written` against `wc -l` after the next successful resume |
 
 ## 16. Maintenance Guide
 
-- **Fix the `send_mail` defect** → remove the leading `self.config` argument from both call sites in `EdmingleExportRun.run()`.
 - **Chunk size/rate limits/retry behavior** → the `DEFAULTS` dict in `edmingle_export.py` (no config file or CLI flag).
 - **Output columns** → `FIELDS` in `edmingle_constants.py`.
 - **Permanent vs. transient classification** → the status sets in `edmingle_constants.py`.
@@ -241,5 +239,4 @@ Rows are under **`result.studentlist`**; pagination under `page_context`.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24, including the currently blocked pipeline state and the
-`send_mail` defect. Project/technical owner: requires confirmation.*
+*Initial documentation: 2026-09-24. `send_mail` defect fixed 2026-09-25. Project/technical owner: requires confirmation.*

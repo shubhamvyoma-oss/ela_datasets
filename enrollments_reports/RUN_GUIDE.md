@@ -3,7 +3,6 @@
 Exports enrollment rows for a date range in 30-day chunks into one CSV; long ranges take hours. Details: [ENROLLMENTS_REPORTS.md](ENROLLMENTS_REPORTS.md).
 
 ## Before you start
-- **Known defect:** the "started"/"completed" emails call `send_mail` wrongly, so the next run is expected to crash immediately with `TypeError: send_mail() got multiple values for argument 'subject'`. Not fixed yet.
 - `/home/projectdev/ela_datasets/credentials.yaml` has a valid key; `notifications.yaml` (this folder) is optional.
 - **Dates are `DD-MM-YYYY`** (every other dataset uses `YYYY-MM-DD`).
 - Output is always `output/edmingle_enrollment_report.csv` and is **overwritten** by a run over a different range — copy it away first if needed.

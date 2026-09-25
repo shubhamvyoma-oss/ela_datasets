@@ -51,7 +51,7 @@ tmux attach -t <folder>      return to the session
 | `session_wise_attendance` | `python3 build_course_catalog.py`, then `resolve_class_ids.py`, then `build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD` | yes | [guide](session_wise_attendance/RUN_GUIDE.md) |
 
 Notes:
-- `enrollments_reports` takes **`DD-MM-YYYY`** dates (every other dataset uses `YYYY-MM-DD`) and has a known `send_mail` defect that crashes the next run's "started" email — fix it first (see its guide).
+- `enrollments_reports` takes **`DD-MM-YYYY`** dates (every other dataset uses `YYYY-MM-DD`).
 - `country_wise_data` Stage 2 needs a fresh `Student-Export*.csv` in `input/`; run the stages in order.
 - `session_wise_attendance` stages must run in order; `attendance_crossvalidation.py` is a manual spot-check that currently gets HTTP 404.
 - `edmingle_api_key_generator` refuses to rotate while any pipeline is running (exit code 2); rotating revokes the old key at once. Flags: `--check-config`, `--verify-only`, `--force`.
