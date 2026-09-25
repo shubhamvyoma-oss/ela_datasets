@@ -24,7 +24,7 @@ orchestration layer or scheduler.
 | `country_wise_data/` | 3-stage: geo-IP + dial-code country signals, merged | [COUNTRY_WISE_DATA.md](country_wise_data/COUNTRY_WISE_DATA.md) |
 | `course_batch_merge/` | Catalogue merged with batches (all statuses) | [COURSE_BATCH_MERGE.md](course_batch_merge/COURSE_BATCH_MERGE.md) |
 | `course_catalogue_data/` | Raw, unfiltered flatten of the course catalogue | [COURSE_CATALOGUE_DATA.md](course_catalogue_data/COURSE_CATALOGUE_DATA.md) |
-| `edmingle_api_key_generator/` | Rotates the shared Edmingle API key (manual, occasional) | [EDMINGLE_API_KEY_GENERATOR.md](edmingle_api_key_generator/EDMINGLE_API_KEY_GENERATOR.md) |
+| `edmingle_api_key_generator/` | Rotates the shared Edmingle API key (monthly, 25th 09:00 IST, or by hand) | [EDMINGLE_API_KEY_GENERATOR.md](edmingle_api_key_generator/EDMINGLE_API_KEY_GENERATOR.md) |
 | `ela_mis_datasets/` | Full student roster + course/attendance sync (~68–80h full run) | [ELA_MIS_DATASETS.md](ela_mis_datasets/ELA_MIS_DATASETS.md) |
 | `enrollments_reports/` | Row-level enrollment export over a date range | [ENROLLMENTS_REPORTS.md](enrollments_reports/ENROLLMENTS_REPORTS.md) |
 | `session_wise_attendance/` | 3-stage funnel: catalogue → class_id → per-session attendance | [SESSION_WISE_ATTENDANCE.md](session_wise_attendance/SESSION_WISE_ATTENDANCE.md) |

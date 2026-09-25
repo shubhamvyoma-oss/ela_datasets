@@ -34,6 +34,11 @@ EDMINGLE_USERNAME = _tutor_login.get("username", "")
 EDMINGLE_PASSWORD = _tutor_login.get("password", "")
 REQUEST_TIMEOUT_SECONDS = 30
 
+# Used to check that a freshly generated key actually works, and by --verify-only.
+EDMINGLE_BASE_URL = str(_edmingle.get("base_url", "")).rstrip("/")
+EDMINGLE_ORGANIZATION_ID = str(_edmingle.get("organization_id", ""))
+EDMINGLE_CURRENT_API_KEY = str(_edmingle.get("api_key", ""))
+
 # Email settings ---------------------------------------------------------------
 EMAIL_FROM = _smtp.get("from_address", "")
 EMAIL_TO = tuple(_email_channel.get("to_addresses", []))

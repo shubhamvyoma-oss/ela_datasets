@@ -6,7 +6,9 @@
 username/password, obtains a fresh API key, writes it into the shared `credentials.yaml`, and
 emails a notification. Every other `ela_datasets` pipeline only **reads** `edmingle.api_key`;
 this is the only script that **writes** it. Because it rewrites a credential every other pipeline
-depends on, it's designed to be run deliberately by a person, never automatically.
+depends on, it **refuses to run while any other pipeline is running** and **checks the new key
+works before emailing it**. It runs by itself on the 25th of every month at 09:00 IST (Section 13)
+and can also be run by hand.
 
 **Purpose:** rotate the shared Edmingle API key without ever printing, logging, or persisting the
 raw key anywhere except the `credentials.yaml` write and the notification email body.
@@ -19,15 +21,21 @@ flowchart TD
     B -->|fails| Z1[Exit 1 - failed safely, nothing changed]
     B -->|ok| C{--check-config flag?}
     C -->|yes| Z2[Print OK, exit 0 - no network/file/email]
-    C -->|no| D["read_credentials()<br/>from credentials.yaml tutor_login,<br/>or interactive prompt if blank"]
+    C -->|no| V{--verify-only flag?}
+    V -->|yes| V1["Check the key now in credentials.yaml<br/>with one read-only call, exit 0 or 1"]
+    V -->|no| GD{"Any other pipeline running?<br/>edmingle_rotation_guard"}
+    GD -->|yes, no --force| Z0["Exit 2 - SKIPPED, nothing changed,<br/>notice email sent"]
+    GD -->|no, or --force| D["read_credentials()<br/>from credentials.yaml tutor_login,<br/>or interactive prompt if blank"]
     D --> E["generate_api_key()<br/>POST tutor/login as multipart<br/>JSONString form field"]
     E -->|non-2xx / bad JSON / 429| Z3[Raise ApiKeyGenerationError, exit 1]
     E -->|200 + valid key| F["extract_api_key()<br/>validates code==200, 16-256 chars, no whitespace"]
     F --> G["update_shared_api_key()<br/>regex-replace api_key line in<br/>../../credentials.yaml"]
     G -->|write fails| Z4[Exit 1 - credentials.yaml unchanged]
-    G -->|write ok| H["send_api_key_email()<br/>SMTP/STARTTLS notification with<br/>full key in body"]
+    G -->|write ok| K["verify_api_key()<br/>one read-only Edmingle call with the new key,<br/>up to 3 tries 5s apart"]
+    K -->|rejected| Z6["Exit 1 - key NOT emailed,<br/>notice email, credentials.yaml WAS updated"]
+    K -->|accepted| H["send_api_key_email()<br/>SMTP/STARTTLS notification with<br/>full key in body"]
     H -->|fails| Z5["Exit 1, but stderr states<br/>credentials.yaml WAS updated"]
-    H -->|ok| I[Exit 0 - key rotated and emailed]
+    H -->|ok| I[Exit 0 - key rotated, checked and emailed]
 ```
 
 **Lineage:** tutor login → key extracted/validated → `credentials.yaml` rewritten → every other
@@ -40,11 +48,13 @@ flowchart TD
 | `scripts/edmingle_generate_api_key.py` | Entry point — validates settings, logs in, extracts/validates the key, orchestrates the write then the email. |
 | `scripts/edmingle_api_key_settings.py` | Loads settings from `credentials.yaml` and `../notifications.yaml`. |
 | `scripts/edmingle_credentials_writer.py` | The only code allowed to write `credentials.yaml` — targeted regex replace of the `api_key` line only. |
-| `scripts/edmingle_api_key_email.py` | Builds and sends the notification email (SMTP/STARTTLS). |
+| `scripts/edmingle_api_key_email.py` | Builds and sends the key email and the key-free status notices (SMTP/STARTTLS). |
+| `scripts/edmingle_rotation_guard.py` | Refuses to rotate while another `ela_datasets` pipeline is running (reads `/proc`, Linux only). |
 | `../notifications.yaml` | This pipeline's own SMTP/recipient config (restricted permissions, not committed). |
 | `scripts/run_generate_and_email_api_key.bat` | Windows launcher for the full real run. |
-| `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py` | Offline unit tests (11 total). |
-| `output/README.md` | Placeholder — this pipeline produces no file output. |
+| `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py`, `test_rotation_guard.py` | Offline unit tests (33 total). |
+| `output/README.md` | Placeholder — this pipeline produces no data output. |
+| `output/rotation.log` | Written only by the monthly cron run (timestamp + the script's messages, never the key). |
 | `../../credentials.yaml` | Holds `tutor_login.{login_url,username,password}` (read) and `api_key` (rewritten). |
 | `../../common.py` | Supplies `load_credentials()`/`load_notifications()`. |
 
@@ -96,10 +106,12 @@ sends via `smtplib.SMTP` with STARTTLS.
 
 ## 7. Configuration & Parameters
 
-- **CLI:** `--check-config` (validate only — no network/file/email).
+- **CLI:** `--check-config` (validate only — no network/file/email); `--verify-only` (one read-only call to check the key now in `credentials.yaml` still works, changes nothing); `--force` (rotate even if other pipelines are running — they will fail with invalid credentials until restarted).
+- **Exit codes:** `0` done; `1` failed; `2` skipped because a pipeline is running (nothing changed).
 - **`../../credentials.yaml`:** `tutor_login.{login_url,username,password}` (read), `api_key` (rewritten).
 - **`notifications.yaml`:** SMTP host/port/from/app-password/timeout, `to_addresses`; Slack/Teams blocks present but disabled and unused.
-- **Hardcoded:** `REQUEST_TIMEOUT_SECONDS=30`; accepted key length 16–256 chars.
+- **`../../credentials.yaml` also needs** `base_url` (https) and `organization_id`, used only to check the new key.
+- **Hardcoded:** `REQUEST_TIMEOUT_SECONDS=30`; accepted key length 16–256 chars; key check = 3 attempts, 5s apart.
 - Neither YAML file is committed to version control. No secret values appear in this document.
 
 ## 8. Data Transformation, Output & Schema
@@ -125,13 +137,14 @@ requirement before writing `credentials.yaml`, non-empty key before writing.
 
 **Confirmed limitations:**
 - No check that the new key actually differs from the previous one — a no-op rotation isn't detected.
-- No post-write verification that the new key works against a live endpoint.
-- No retry on transient network failure during the single login call — immediately terminal, by design (a short human-initiated action, not a long unattended run).
-- Running this script is inherently disruptive — it invalidates the previous key for every pipeline using it, with no check for a pipeline mid-run.
+- No retry on the single login call — a failure is terminal, emails a notice, and waits for the next scheduled run or a manual re-run.
+- Rotating always invalidates the previous key immediately (verified 2026-09-25), so anything holding the old key fails. The running-pipeline guard only sees processes **on the machine it runs on**, only on Linux, and cannot catch a pipeline that starts in the instant after the check; it also does not know about a copy of the key stored elsewhere.
+- **Known, not fixed:** each rotation recreates `credentials.yaml`, which resets its permissions from `600` to `664` (found 2026-09-25; other users cannot reach it today only because the home directory is `750`). Run `chmod 600 ../../credentials.yaml` after a rotation until the writer is fixed.
+- If the new key fails its check, the old key is already revoked and is not kept anywhere, so there is no automatic rollback — the notice email says so and the key is not emailed.
 - The key is emailed in plaintext to every address in `to_addresses`.
 - The credentials writer's regex depends on the file's current formatting — a structural change makes it refuse to write (fails safely, but needs re-validating).
 
-**Requires confirmation:** whether any operational cadence/runbook exists for when this rotation should be run.
+**Cadence (decided 2026-09-25 by the project owner):** monthly, 25th at 09:00 IST, by cron.
 
 ## 10. Error Handling & Logging
 
@@ -153,8 +166,7 @@ design. The key value is structurally prevented from appearing in any log/print/
 
 ## 12. Setup & How to Run
 
-Unlike the other 7 pipelines, this tool is meant to run standalone (it's a manual, occasional key
-rotation, not a scheduled data pull), so it has its own `requirements.txt` rather than relying on
+Unlike the other 7 pipelines, this tool is meant to run standalone (it's a key rotation, not a data pull), so it has its own `requirements.txt` rather than relying on
 the shared repo-root `.venv/` — either works, since both provide the same `requests`/`PyYAML`.
 
 **Step by step (on the VPS, using the shared venv):**
@@ -176,6 +188,12 @@ python3 edmingle_generate_api_key.py
 # Configuration check only (no network/file/email)
 python3 edmingle_generate_api_key.py --check-config
 
+# Check the key currently in credentials.yaml still works (one read-only call, changes nothing)
+python3 edmingle_generate_api_key.py --verify-only
+
+# Rotate even though another pipeline is running (it will fail with invalid credentials)
+python3 edmingle_generate_api_key.py --force
+
 # Windows launcher (same as the full run)
 run_generate_and_email_api_key.bat
 
@@ -185,14 +203,28 @@ python3 -m unittest discover
 
 ## 13. Automation / Scheduling
 
-**None, and deliberately so.** Documented explicitly: "Never run this automatically or on a
-schedule." Unlike every other `ela_datasets` pipeline, this one authenticates with real human
-credentials and rewrites something every other pipeline depends on — run only when a person
-deliberately intends a key rotation.
+**Yes — monthly, on the 25th at 09:00 IST**, by cron on the VPS (added 2026-09-25 at the project owner's
+request; before that this tool was manual-only). The server clock is UTC, so the entry is:
+
+```
+30 3 25 * *   cd .../edmingle_api_key_generator/scripts && (date -Is; .venv/bin/python3 edmingle_generate_api_key.py) >> ../output/rotation.log 2>&1
+```
+
+- **Next runs:** 2026-10-25, 2026-11-25, 2026-12-25 (each 03:30 UTC = 09:00 IST).
+- **If a pipeline is running at that moment,** nothing is rotated: the run exits with code 2, writes the reason to
+  `output/rotation.log`, and emails a "SKIPPED" notice. It does **not** retry until next month, so rotate by hand
+  (or with `--force`) once the pipeline finishes if the key must change sooner.
+- **Emails you can get:** the new key (after it was saved *and* checked); a "SKIPPED" notice; a "FAILED" notice; a
+  "FAILED - new key not accepted" notice. Notices never contain the key, and are sent only if `app_password` is set in
+  `../notifications.yaml` (a scheduled run has nobody to prompt).
+- **Not exercised end to end yet:** the guard, key check, notices and cron entry were tested (33 unit tests, `--verify-only`
+  and the guard against the real process table), but no full scheduled rotation has run since they were added.
 
 ## 14. Important Business / Technical Rules
 
 - Write-before-notify is deliberate — the rotation itself must not be gated on email delivery succeeding.
+- The running-pipeline guard runs **before** any prompt or network call, because the login request is what revokes the old key.
+- The key is checked **after** it is saved and **before** it is emailed: a key Edmingle rejects is never sent out, and the notice email never contains a key.
 - This is the only script permitted to write `credentials.yaml`, enforced structurally (refuse-to-write on any mismatch), not just by convention.
 - The raw key is never logged, printed, or persisted anywhere except the credentials line and the email body.
 - Key format validation (16–256 chars, no whitespace) exists specifically to catch a malformed response before it reaches the file every pipeline trusts.
@@ -205,6 +237,9 @@ deliberately intends a key rotation.
 | "credentials.yaml WAS updated ... but a later step failed" | Rotation succeeded, email failed | The new key is already live — check `notifications.yaml`'s SMTP settings, don't re-rotate |
 | `ApiKeyGenerationError: ... rate-limited` | HTTP 429 from Edmingle | Wait before retrying — no automatic backoff |
 | `CredentialsUpdateError: could not find a single 'api_key' line` | `credentials.yaml`'s structure changed | Re-check the regex in `edmingle_credentials_writer.py`; re-run its tests |
+| Exit code 2, "Not rotating: these pipelines are running" | A pipeline (named in the message) is running | Wait for it to finish and run again; `--force` only if you accept it will fail |
+| "credentials.yaml WAS updated ... but Edmingle did not accept it" | Login worked but the new key is rejected | Old key is already revoked — check the tutor login and `credentials.yaml` on the server; `--verify-only` re-tests |
+| No email on the 25th | Cron didn't run, or the app password is blank/wrong | `output/rotation.log`; `crontab -l`; notices need `app_password` set in `../notifications.yaml` |
 | Unexpected interactive password prompt | A username/password/app-password is blank in the YAML | Populate the relevant file, or answer the prompt |
 
 ## 16. Maintenance Guide
@@ -213,6 +248,7 @@ deliberately intends a key rotation.
 - **Credentials write mechanism change** → `_API_KEY_LINE` regex and `update_shared_api_key()` in `edmingle_credentials_writer.py`; re-run its tests afterward.
 - **Email content/recipients** → `build_api_key_email()`, or `notifications.yaml`'s `to_addresses`.
 - **SMTP provider change** → `notifications.yaml`'s `channels.email.smtp` block, no code change.
+- **Change the schedule** → the `30 3 25 * *` line in `crontab -l` on the VPS (server clock is UTC; 03:30 UTC = 09:00 IST).
 - **New notification channel** → Slack/Teams blocks already exist as disabled placeholders, unread by any current code.
 
 ## 17. Upstream & Downstream Dependencies

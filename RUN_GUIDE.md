@@ -97,13 +97,17 @@ python3 course_catalogue_data.py
 
 ## 5. Edmingle_API_Key_Generator (utility — rotates the shared API key)
 
-**Never run automatically or on a schedule.** Run only when a real key rotation is intended.
+**Runs by itself on the 25th of every month at 09:00 IST** (cron). It refuses to run, and emails a notice, if any
+other pipeline is running (rotating revokes the old key instantly and would break that run), and it checks the new
+key works before emailing it. You can also run it by hand.
 
 ```bash
 cd /home/projectdev/ela_datasets/edmingle_api_key_generator/scripts
 python3 edmingle_generate_api_key.py --check-config   # validate config only, no live call
+python3 edmingle_generate_api_key.py --verify-only    # check the current key still works (read-only)
 python3 edmingle_generate_api_key.py                  # full run: rotates the live key + emails it
 ```
+- **Exit code 2** = skipped because a pipeline is running; nothing changed. `--force` overrides (those pipelines will fail).
 - **Check after running:** confirmation email received. If stderr says the credentials file **was** updated but a later step failed, the key is already rotated — do not re-run, just fix the email config.
 
 ---
