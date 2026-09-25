@@ -274,64 +274,171 @@ None of the three output CSVs contain individual student PII (course/batch/sessi
 student-level). The placeholder SMTP addresses mean no real email currently leaves this pipeline
 — an availability concern, not a data-exposure risk.
 
-## 19. Raw API Payload (Skeleton)
+## 19. Raw API Payload (Captured Structure)
 
-**Not a captured live response** — built from the field names already confirmed in Section 8's
-schema list. Five endpoints across the 3 stages plus the standalone spot-check tool:
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Course catalogue** (Stage 1, `.../courses/catalogue?institution_id=...`):
+**Stage 1 catalogue** (`GET .../institute/483/courses/catalogue`) — same shape as `COURSE_CATALOGUE_DATA.md`
+(Title-Case fields under `response`). **Stage 1 batches** (`GET .../short/masterbatch?status=...`) — same nested
+shape as `COURSE_BATCH_MERGE.md` (`courses[].batch[]`, plus `page_context`); not repeated here.
+
+**Stage 2 — batch to class_ids** (`GET .../masterbatch/<batch_id>`, params `apikey` + `org_id`). Confirms the
+existing code's correction: the top-level `class.class_id` is the **batch** id; the real subject-level
+class_ids are in `class.courses_array[].class_id`.
+
 ```json
 {
-  "data": [
-    {"bundle_id": "<TO CONFIRM>", "name": "<TO CONFIRM>", "batch_id": "<TO CONFIRM>",
-     "status": "<TO CONFIRM>", "start_date": "<TO CONFIRM: epoch>", "end_date": "<TO CONFIRM: epoch>",
-     "tutor_name": "<TO CONFIRM>", "tutor_id": "<TO CONFIRM>", "batch_enrollment_count": "<TO CONFIRM>"}
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "class": {
+    "courses_array": [
+      {
+        "class_id": "<int>",
+        "tutor_id": "<int>",
+        "tutor_name": "<str>",
+        "course_id": "<int>",
+        "batch_name": "<str>",
+        "is_live": "<int>",
+        "zoom_room_waiting": "<int>",
+        "batch_class_count": "<int>",
+        "completed": "<int>",
+        "total_classes": "<int>",
+        "cancelled": "<int>",
+        "display_index": "<int>",
+        "num_users": "<int>",
+        "associated_masterbatches": [
+          "<int>"
+        ],
+        "common_class": "<int>",
+        "virtual_class_type": "<int>",
+        "external_class_link": "<str>",
+        "is_time_restricted": "<int>"
+      }
+    ],
+    "class_id": "<int>",
+    "class_name": "<str>",
+    "tutor_id": "<int>",
+    "tutor_name": "<str>",
+    "bundle_id": "<int>",
+    "start_date": "<str>",
+    "end_date": "<str>",
+    "individual_batch_attendance": "<int>",
+    "organization_id": "<int>",
+    "completed": "<int>",
+    "total_classes": "<int>",
+    "cancelled": "<int>",
+    "bundle_name": "<str>",
+    "external_class_link": "<str>",
+    "num_registrations": "<int>",
+    "admitted_students": "<int>",
+    "archived": "<int>"
+  },
+  "tags": [],
+  "community": [
+    {
+      "community_image_url": "<null>"
+    }
   ]
 }
 ```
 
-**Batch listing** (Stage 2a, `.../short/masterbatch?status={0|3}`):
+**Stage 3 — session attendance** (`GET .../organization/attendances`, params `org_id`, `apikey`, `start`,
+`end` as unix seconds, optional `class_id`). Returns `"classes": []` (not an error) when the class has no
+sessions inside the window. The `message` field is spelled `"Sucess"` by Edmingle.
+
 ```json
 {
-  "data": [
-    {"bundle_id": "<TO CONFIRM>", "batch_id": "<TO CONFIRM>", "status": "<TO CONFIRM>"}
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "classes": [
+    {
+      "id": "<int>",
+      "taken_by": "<int>",
+      "class_date": "<int>",
+      "start_time": "<int>",
+      "end_time": "<int>",
+      "status": "<int>",
+      "taken_at": "<int>",
+      "signin_by": "<int>",
+      "class_type": "<int>",
+      "topics_taught": "<str>",
+      "pages_taught": "<str>",
+      "homework": "<str>",
+      "topics_taught_ids": "<str>",
+      "signout_at": "<int>",
+      "signout_by": "<int>",
+      "teacher_class_date": "<int>",
+      "teacher_start_time": "<int>",
+      "teacher_end_time": "<int>",
+      "signout_status": "<int>",
+      "is_live": "<int>",
+      "zoom_room_waiting": "<int>",
+      "virtual_class_type": "<int>",
+      "external_class_link": "<null>",
+      "gmt_start_time": "<int>",
+      "gmt_end_time": "<int>",
+      "gmt_teacher_start_time": "<int>",
+      "gmt_teacher_end_time": "<int>",
+      "pay": "<int>",
+      "class_name": "<str>",
+      "schedule_id": "<null>",
+      "class_id": "<int>",
+      "can_change_date": "<int>",
+      "can_change_time": "<int>",
+      "taken_by_name": "<str>",
+      "signin_by_name": "<str>",
+      "signout_by_name": "<str>",
+      "master_batch_id": "<int>",
+      "master_batch_name": "<str>",
+      "individual_batch_attendance": "<int>",
+      "is_sharable_link_enabled": "<str>",
+      "can_join_without_login": "<str>",
+      "join_token": "<null>",
+      "total_attendances": "<int>",
+      "total_present": "<int>",
+      "total_absent": "<int>",
+      "total_late": "<int>",
+      "total_excused": "<int>",
+      "total_missing": "<int>",
+      "total_leave": "<int>",
+      "organization_id": "<int>",
+      "is_zoom_poll_taken": "<int>",
+      "feedback_form_id": "<str>",
+      "is_nonmandatory_session": "<int>",
+      "total": "<int>",
+      "present": "<int>",
+      "not_marked": "<int>",
+      "not_applicable": "<int>",
+      "master_batches": [],
+      "attendance_rank": "<int>",
+      "siblings_count": "<int>"
+    }
   ]
 }
 ```
 
-**Batch → class_id** (Stage 2b, `.../masterbatch/{batch_id}`):
+**Spot-check tool — attendance detail** (`GET .../bundle/general/attendancedet`, ISO-8601 dates):
+
 ```json
 {
-  "_comment": "TO CONFIRM: the top-level class_id field is misleading per Section 8's 'response-shape correction' note -- the real class_id may live elsewhere in this response",
-  "class_id": "<TO CONFIRM: unreliable, see comment above>",
-  "tutor_name": "<TO CONFIRM>", "tutor_id": "<TO CONFIRM>",
-  "total_classes": "<TO CONFIRM>", "completed_classes": "<TO CONFIRM>", "cancelled_classes": "<TO CONFIRM>",
-  "num_users": "<TO CONFIRM: enrollment count, NOT attendance -- see Section 14>"
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "avg_attendance_data": {
+    "sessions_scheduled": "<int>",
+    "sessions_cancelled": "<int>",
+    "in_time_signins": "<int>",
+    "not_signed_ins": "<int>",
+    "total_signed_ins": "<int>",
+    "total_nonmandatory_sessions": "<int>",
+    "avg_attendance": "<int>"
+  }
 }
 ```
 
-**Session attendance** (Stage 3, `.../organization/attendances`):
-```json
-{
-  "data": [
-    {"session_id": "<TO CONFIRM>", "class_id": "<TO CONFIRM>",
-     "start": "<TO CONFIRM: unix>", "end": "<TO CONFIRM: unix>",
-     "present": "<TO CONFIRM>", "not_marked": "<TO CONFIRM>",
-     "taken_by_name": "<TO CONFIRM>", "individual_batch_attendance": "<TO CONFIRM>",
-     "signin_by_name": "<TO CONFIRM: fetched but deliberately not written to output>",
-     "class_status_code": "<TO CONFIRM: fetched but deliberately not written to output>"}
-  ]
-}
-```
-
-**Attendance detail** (standalone spot-check, `.../bundle/general/attendancedet`):
-```json
-{
-  "data": [
-    {"class_id": "<TO CONFIRM>", "class_date": "<TO CONFIRM>", "present": "<TO CONFIRM>"}
-  ]
-}
-```
+**Possible defect in `attendance_crossvalidation.py` (not changed):** `fetch_attendance_summary()` sends only an
+`apikey` header. When tested with that alone this endpoint returned **HTTP 404 `"You are not a part of this
+org"`**; adding the `orgid`/`ORGID` headers made it return the payload above. The spot-check's
+attendancedet comparison is therefore likely failing today.
 
 ## 20. Future Improvements
 

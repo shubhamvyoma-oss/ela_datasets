@@ -249,56 +249,91 @@ Output CSVs contain student/parent PII (names, emails,
 phone numbers) — access to `output/` should be restricted; no access control exists in the script
 itself. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
 
-## 19. Raw API Payload (Skeleton)
+## 19. Raw API Payload (Captured Structure)
 
-**Not a captured live response** — built from the field names already confirmed in Section 8's
-schema list. Two endpoints, two shapes:
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Student roster** (`.../organization/students`):
+**Student roster** (`GET .../organization/students`, headers `apikey` + `ORGID`):
+
 ```json
 {
-  "_comment": "TO CONFIRM: real top-level wrapper key/shape; empty list signals end of pagination per Section 4",
-  "data": [
+  "query_time": "<float>",
+  "students": [
     {
-      "user_id": "<TO CONFIRM>",
-      "name": "<TO CONFIRM>",
-      "email": "<TO CONFIRM>",
-      "user_username": "<TO CONFIRM>",
-      "contact_number": "<TO CONFIRM>",
-      "parent_contact_number": "<TO CONFIRM>",
-      "parent_email": "<TO CONFIRM>",
-      "parent_name": "<TO CONFIRM>",
-      "registration_number": "<TO CONFIRM>",
-      "role": "<TO CONFIRM>",
-      "status": "<TO CONFIRM>",
-      "is_archived": "<TO CONFIRM: 0/1>",
-      "date": "<TO CONFIRM: unix timestamp, passed through unconverted>",
-      "customfield_data": ["<TO CONFIRM: matched by name to derive PhoneNumber/Age/LastName -- see Section 14>"]
+      "user_id": "<int>",
+      "name": "<str>",
+      "email": "<null> or <str>",
+      "role": "<int>",
+      "status": "<int>",
+      "registration_number": "<str>",
+      "user_username": "<str>",
+      "contact_number": "<str>",
+      "contact_number_2": "<str>",
+      "organization_ids": [
+        "<str>"
+      ],
+      "parent_name": "<null>",
+      "parent_contact_number": "<null>",
+      "parent_email": "<null>",
+      "is_archived": "<int>",
+      "contact_number_country_id": "<int>",
+      "contact_number_2_country_id": "<null>",
+      "parent_contact_number_country_id": "<null>",
+      "date": "<str>",
+      "time": "<str>",
+      "formatted_date": "<str>",
+      "contact_number_dial_code": "<str>",
+      "contact_number_2_dial_code": "<str>",
+      "parent_contact_number_dial_code": "<str>"
     }
-  ]
+  ],
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "page_context": {
+    "page": "<int>",
+    "per_page": "<int>",
+    "has_more_page": "<bool>",
+    "total_rows": "<int>",
+    "sort_by": "<str>",
+    "sort_order": "<str>"
+  }
 }
 ```
 
-**Course/attendance** (`.../admin/classes/attendance`, one call per student via `user_id`):
+**Not seen in the 2-record sample:** `customfield_data`, which `extract_student()` reads to derive
+`PhoneNumber`/`Age`/`LastName`. Either it is absent for some records or only returned in certain cases — worth
+confirming against a student who has filled those fields in; if it is genuinely absent, those 3 columns come
+out blank. Also note `email` was `null` for at least one student, and `parent_*` fields were `null`.
+
+**Per-student classes** (`GET .../admin/classes/attendance?user_id=<id>&response_type=1`) — one call per
+student. A student with no enrolled classes returns `"classes": []`.
+
 ```json
 {
-  "_comment": "TO CONFIRM: real top-level wrapper key/shape",
-  "data": [
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "classes": [
     {
-      "class_id": "<TO CONFIRM>",
-      "class_name": "<TO CONFIRM>",
-      "tutor_name": "<TO CONFIRM>",
-      "total_classes": "<TO CONFIRM>",
-      "present": "<TO CONFIRM>",
-      "absent": "<TO CONFIRM>",
-      "late": "<TO CONFIRM>",
-      "excused": "<TO CONFIRM>",
-      "start_date": "<TO CONFIRM: unix timestamp>",
-      "end_date": "<TO CONFIRM: unix timestamp>",
-      "master_batch_id": "<TO CONFIRM>",
-      "master_batch_name": "<TO CONFIRM>",
-      "batch_status": "<TO CONFIRM>",
-      "bundle_id": "<TO CONFIRM>"
+      "class_id": "<int>",
+      "class_name": "<str>",
+      "tutor_name": "<str>",
+      "total_classes": "<int>",
+      "present": "<int>",
+      "absent": "<int>",
+      "late": "<int>",
+      "excused": "<int>",
+      "start_date": "<int>",
+      "end_date": "<int>",
+      "master_batch_id": "<int>",
+      "master_batch_name": "<str>",
+      "classusers_start_date": "<int>",
+      "classusers_end_date": "<int>",
+      "batch_status": "<int>",
+      "cu_status": "<int>",
+      "cu_state": "<int>",
+      "institution_bundle_id": "<int>",
+      "archived_at": "<int>",
+      "bundle_id": "<int>"
     }
   ]
 }

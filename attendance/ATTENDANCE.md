@@ -299,39 +299,63 @@ during this doc's 2026-09-25 cleanup).
 The API key is masked in at least one log line (not exhaustively checked elsewhere).
 Alert emails carry operational details only — no individual-student PII in the output CSVs.
 
-## 18. Raw API Payload (Skeleton)
+## 18. Raw API Payload (Captured Structure)
 
-**Not a captured live response** — Edmingle credentials/session weren't used to make a fresh call
-for this document. This is a skeleton built from the raw field names already confirmed elsewhere
-in this doc (Sections 4, 6, 9, 14 — `attendance_id`, `class_Id`, `studentRating`,
-`studentBatchStatus`, etc. are exact field names the code reads, not guesses). The response
-envelope (top-level wrapper key, pagination fields) is **unconfirmed** — replace this whole block
-with a real captured response the next time the pipeline runs.
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
+
+**Endpoint:** `GET .../report/csv?report_type=55&response_type=1` (one IST day per call). Despite the
+`/csv` in the path, it returns **`application/json`**, not CSV. One recent day measured **4,220 records /
+~5.3 MB** in a single response — the pipeline parses a whole day into memory at once, which matters on this
+server's small RAM. Every record is one student-in-one-session; `studentAttendanceStatus` is the field
+`present_value` (`P`/`A`/`L`) is matched against.
 
 ```json
 {
-  "_comment": "TO CONFIRM: real top-level wrapper key/shape — this is a placeholder guess",
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
   "data": [
     {
-      "batch_Id": "<TO CONFIRM>",
-      "batchName": "<TO CONFIRM>",
-      "bundle_Id": "<TO CONFIRM>",
-      "bundleName": "<TO CONFIRM>",
-      "course_Id": "<TO CONFIRM>",
-      "courseName": "<TO CONFIRM>",
-      "teacher_Id": "<TO CONFIRM>",
-      "teacherName": "<TO CONFIRM>",
-      "student_Id": "<TO CONFIRM>",
-      "attendance_id": "<TO CONFIRM: preferred session-id field>",
-      "class_Id": "<TO CONFIRM: subject/stream id, NOT a session id -- do not use as session_id_column>",
-      "classDate": "<TO CONFIRM: format matches config.yaml pipeline.date_format, e.g. '03 Jan 2026'>",
-      "studentBatchStatus": "<TO CONFIRM: e.g. 'Active' / 'Archived' / 'Cancelled'>",
-      "studentRating": "<TO CONFIRM: 0 means 'not rated', not a real zero>",
-      "markStatus": "<TO CONFIRM: maps to pipeline.present_value / absent_value / late_value>"
+      "student_Id": "<int>",
+      "studentName": "<str>",
+      "regNo": "<str>",
+      "studentEmail": "<str>",
+      "studentContact": "<str>",
+      "studentBatchStatus": "<str>",
+      "batch_Id": "<int>",
+      "batchName": "<str>",
+      "class_Id": "<int>",
+      "className": "<str>",
+      "bundle_Id": "<int>",
+      "bundleName": "<str>",
+      "course_Id": "<int>",
+      "courseName": "<str>",
+      "attendance_id": "<int>",
+      "sessionName": "<str>",
+      "teacher_Id": "<int>",
+      "teacherName": "<str>",
+      "teacherEmail": "<str>",
+      "teacherContact": "<str>",
+      "teacherClassSigninStatus": "<str>",
+      "studentAttendanceStatus": "<str>",
+      "classDate": "<str>",
+      "startTime": "<str>",
+      "endTime": "<str>",
+      "classDuration": "<str>",
+      "studentRating": "<int>",
+      "studentComments": "<str>",
+      "batchManagerName": "<str>",
+      "batchManagerEmail": "<str>",
+      "batchManagerContactNumber": "<str>",
+      "classTakenAt": "<str>",
+      "classSignoutAt": "<str>",
+      "attendanceMarkTime": "<str>"
     }
   ]
 }
 ```
+
+The record includes student and teacher names, emails and phone numbers; the summary CSVs this pipeline
+writes do not carry them.
 
 ## 19. Future Improvements
 

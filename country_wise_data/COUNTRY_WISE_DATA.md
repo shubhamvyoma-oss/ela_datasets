@@ -281,36 +281,37 @@ export into `input/` before each run.
 contacts, addresses) — gitignored, share only through a PII-appropriate channel. Stage 1's
 credentials are never printed in logs. No email/alerting exists, so no SMTP secret exposure here.
 
-## 18. Raw API Payload (Skeleton)
+## 18. Raw API Payload (Captured Structure)
 
-Only **Stage 1** calls a live API (`.../user/useranalyticslist`) — Stages 2/3 are pure file-to-file
-merges with no payload to document. **Not a captured live response** — this skeleton is built
-from the field names already confirmed in Section 8's schema list, not a fresh call.
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
+
+Only **Stage 1** calls a live API (`GET .../user/useranalyticslist`); Stages 2/3 are file-to-file merges with
+no API payload. Pagination is via `page_context.has_more_page`.
 
 ```json
 {
-  "page_context": {
-    "has_more_page": "<TO CONFIRM: boolean>",
-    "page": "<TO CONFIRM>",
-    "per_page": 500
-  },
-  "data": [
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "user_list": [
     {
-      "user_id": "<TO CONFIRM>",
-      "name": "<TO CONFIRM>",
-      "email": "<TO CONFIRM>",
-      "contact_number": "<TO CONFIRM>",
-      "geoLocationInfo": {
-        "country": "<TO CONFIRM: this is the filter_key path, geoLocationInfo.country>",
-        "region": "<TO CONFIRM>"
-      },
-      "time_spent_seconds": "<TO CONFIRM>",
-      "total_sessions": "<TO CONFIRM>",
-      "last_seen_epoch": "<TO CONFIRM: unix epoch>",
-      "created_at_epoch": "<TO CONFIRM: unix epoch>",
-      "source_page": "<TO CONFIRM>"
+      "_id": "<int>",
+      "timeSpent": "<int>",
+      "totalSessions": "<int>",
+      "lastSeen": "<int>",
+      "filterValue": "<str>",
+      "regionName": "<str>",
+      "name": "<str>",
+      "email": "<str>",
+      "contact_number": "<str>",
+      "created_at": "<int>"
     }
-  ]
+  ],
+  "page_context": {
+    "page": "<int>",
+    "per_page": "<int>",
+    "has_more_page": "<bool>",
+    "total_rows": "<int>"
+  }
 }
 ```
 

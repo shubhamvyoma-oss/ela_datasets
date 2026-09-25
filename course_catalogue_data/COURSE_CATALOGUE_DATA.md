@@ -226,25 +226,83 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 `credentials.yaml` holds the shared API key and is gitignored. No PII — catalogue-level data
 only, no student records. No `print()` call includes credential values.
 
-## 18. Raw API Payload (Skeleton)
+## 18. Raw API Payload (Captured Structure)
 
-**Genuinely incomplete, not just unconfirmed values** — unlike this repo's other pipelines, this
-one applies **no field-level filtering** (Section 8): every column Edmingle's response happens to
-contain becomes an output column, and the current confirmed output is 61 columns wide. Only a
-handful of those field names are individually known from this document (`overview`,
-`about_the_course`, `product_description`); the rest are unenumerated. This skeleton shows only
-the known fields — replace the whole block with a real captured response to get the true shape.
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
+
+**Endpoint:** `GET .../institute/483/courses/catalogue?org_id=<org>`, headers `apikey` + `ORGID`. The list is
+under **`response`** (566 records in this sample, matching the CSV's 566 rows). Raw field names are **Title Case
+with spaces** (`Bundle id`, `Course Name`); `course_catalogue_data.py` lower-cases and underscores them
+(`bundle_id`, `course_name`), which is why the CSV columns look different. Nearly every field is a string, even
+numeric-looking ones like `Number of Lectures`. `Position in Sub-funnel (School` is truncated in Edmingle's own
+response, not by this pipeline.
 
 ```json
 {
-  "_comment": "TO CONFIRM: real top-level wrapper key/shape, and the ~55 other columns not individually documented",
-  "data": [
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "response": [
     {
-      "course_id": "<TO CONFIRM>",
-      "course_name": "<TO CONFIRM>",
-      "overview": "<TO CONFIRM: free text, contains embedded newlines -- see Section 8's wc -l warning>",
-      "about_the_course": "<TO CONFIRM: free text, contains embedded newlines>",
-      "product_description": "<TO CONFIRM: free text>"
+      "Bundle id": "<int>",
+      "Course Name": "<str>",
+      "Product Description": "<str>",
+      "Overview": "<str>",
+      "Cost": "<int>",
+      "Is Online Package": "<int>",
+      "Online Registration Allowed": "<int>",
+      "Free Preview Allowed": "<int>",
+      "Pretty Name": "<str>",
+      "Num Students": "<int>",
+      "Tutors": "<str>",
+      "Tutord Ids": "<str>",
+      "Course URL": "<str>",
+      "Course List": "<str>",
+      "Course Ids": "<str>",
+      "Subject": "<str>",
+      "Level": "<str>",
+      "Language": "<str>",
+      "Examination": "<str>",
+      "Texts": "<str>",
+      "Type": "<str>",
+      "Course Division": "<str>",
+      "Certificate": "<str>",
+      "Course Sponsor": "<str>",
+      "Course Title Sanskrit": "<str>",
+      "Duration - old": "<str>",
+      "Live session Schedule text": "<str>",
+      "About The course": "<str>",
+      "Know more about the course": "<str>",
+      "About this Learning Program": "<str>",
+      "Learning Program Value Proposi": "<str>",
+      "How Learning Program Works": "<str>",
+      "Know More About The Programs": "<str>",
+      "Coming soon": "<str>",
+      "Target Audience": "<str>",
+      "Status": "<str>",
+      "Number of Lectures": "<str>",
+      "Duration": "<str>",
+      "Personas": "<str>",
+      "Ongoing Webinar Note": "<str>",
+      "Eligibility": "<str>",
+      "Whats new": "<str>",
+      "Whats new poster": "<str>",
+      "Meta Title": "<str>",
+      "Meta Description": "<str>",
+      "Meta Keywords": "<str>",
+      "dsg link": "<str>",
+      "Hide in Ongoing Webinar": "<str>",
+      "Computer Based Assessment": "<str>",
+      "Course Ordering": "<str>",
+      "Post Enrollment (Redirect URL)": "<str>",
+      "Product ID": "<str>",
+      "SSS Category": "<str>",
+      "Credits": "<str>",
+      "Viniyoga": "<str>",
+      "Adhyayanam Category": "<str>",
+      "Term of Course": "<str>",
+      "Position in Funnel": "<str>",
+      "Division": "<str>",
+      "Position in Sub-funnel (School": "<str>"
     }
   ]
 }

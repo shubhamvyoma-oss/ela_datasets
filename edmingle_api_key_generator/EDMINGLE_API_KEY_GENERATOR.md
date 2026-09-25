@@ -229,27 +229,24 @@ plaintext over SMTP with STARTTLS (encrypted in transit, but the key itself isn'
 the body). The writer's refuse-to-write behavior on a structural mismatch is itself a security
 control against silently corrupting the shared credentials file.
 
-## 19. Raw API Payload (Skeleton)
+## 19. Raw API Payload (Captured Structure)
 
-**Not a captured live response.** This pipeline's payload is a login exchange, not a data pull —
-built from the field names confirmed in Sections 4–5, not a fresh call.
+**Not captured live, deliberately** — the login endpoint issues a new API key and this pipeline then rewrites
+`credentials.yaml`, so calling it just to inspect a payload would rotate the live shared key and break every
+other pipeline. Shapes below come from the code (`generate_api_key()` / `extract_api_key()`).
 
-**Request** (multipart form field `JSONString`, per Section 4 — not a standard JSON body):
+**Request:** `POST <login_url>` as multipart form field `JSONString` (a JSON *string*, not a JSON body):
 ```json
-{
-  "username": "<TO CONFIRM: from credentials.yaml tutor_login.username>",
-  "password": "<TO CONFIRM: from credentials.yaml tutor_login.password -- never log this>"
-}
+{"username": "<str>", "password": "<str -- never log>"}
 ```
-
-**Response** (per Section 5 — `extract_api_key()` requires `code==200` plus a 16–256 character,
-whitespace-free key somewhere in the body; the exact response field name holding the key is
-**unconfirmed**):
+**Response** (fields the code reads; anything else unconfirmed):
 ```json
 {
   "code": 200,
-  "_comment": "TO CONFIRM: the real field name holding the generated key",
-  "api_key": "<TO CONFIRM: 16-256 chars, no whitespace -- never log or commit this value>"
+  "message": "<str>",
+  "user": {
+    "apikey": "<str, 16-256 chars, no whitespace -- never record a real one>"
+  }
 }
 ```
 

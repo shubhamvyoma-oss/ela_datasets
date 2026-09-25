@@ -227,39 +227,53 @@ The API key is sent only in headers, never logged/printed.
 Output CSVs contain student PII (name, email, phone, shipping details) — access to `output/`
 should be restricted; no access control exists in the script itself.
 
-## 19. Raw API Payload (Skeleton)
+## 19. Raw API Payload (Captured Structure)
 
-**Not a captured live response** — built from the field names already confirmed in Section 8's
-schema list.
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
+
+**Endpoint:** `GET .../reports/enrollment?report_details_type=3&time_step=1&...`, headers `apikey` + `orgid`.
+Rows are under **`result.studentlist`**; pagination under `page_context`.
 
 ```json
 {
-  "page_context": {
-    "has_more_page": "<TO CONFIRM: boolean>",
-    "page": "<TO CONFIRM>",
-    "per_page": 200
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "result": {
+    "studentlist": [
+      {
+        "enrollment_id": "<int>",
+        "bundle_id": "<int>",
+        "user_id": "<int>",
+        "name": "<str>",
+        "email": "<str>",
+        "contact_number": "<str>",
+        "state": "<str>",
+        "contact_number_country_id": "<int>",
+        "enrollment_day": "<str>",
+        "registration_number": "<str>",
+        "enrollment_mode": "<str>",
+        "enrollment_status": "<str>",
+        "learner_type": "<str>",
+        "bundle_name": "<str>",
+        "batch_ids": "<str>",
+        "batches": "<str>",
+        "shipping_details_json": "<str>",
+        "preferred_categories": "<null>",
+        "enrollment_expiration_date": "<str>",
+        "platform_type": "<int>",
+        "product_type_label": "<str>",
+        "product_type": "<int>"
+      }
+    ]
   },
-  "data": [
-    {
-      "enrollment_id": "<TO CONFIRM>",
-      "enrollment_day": "<TO CONFIRM>",
-      "user_id": "<TO CONFIRM>",
-      "name": "<TO CONFIRM>",
-      "email": "<TO CONFIRM>",
-      "contact_number": "<TO CONFIRM>",
-      "state": "<TO CONFIRM>",
-      "registration_number": "<TO CONFIRM>",
-      "learner_type": "<TO CONFIRM>",
-      "enrollment_mode": "<TO CONFIRM>",
-      "enrollment_status": "<TO CONFIRM>",
-      "bundle_id": "<TO CONFIRM>",
-      "bundle_name": "<TO CONFIRM>",
-      "batch_ids": "<TO CONFIRM>",
-      "product_type": "<TO CONFIRM>",
-      "platform_type": "<TO CONFIRM>",
-      "enrollment_expiration_date": "<TO CONFIRM>"
-    }
-  ]
+  "page_context": {
+    "page": "<int>",
+    "per_page": "<int>",
+    "has_more_page": "<bool>",
+    "total_rows": "<int>",
+    "sort_by": "<str>",
+    "sort_order": "<str>"
+  }
 }
 ```
 

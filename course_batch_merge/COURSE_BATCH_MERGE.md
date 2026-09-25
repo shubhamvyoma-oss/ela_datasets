@@ -151,7 +151,7 @@ through to the broad `except`); test-batch substring filter; missing output colu
 silently dropped; strict 41-column schema enforcement.
 
 **Confirmed limitations:**
-- **No pagination on the masterbatch call** — hardcoded `page=1&per_page=1000`; a status over 1,000 batches would silently lose the excess. Not currently observable as a problem (3,193 total rows across all statuses) but not proven safe either.
+- **No pagination on the masterbatch call** — hardcoded `page=1&per_page=1000`; a status over 1,000 batches would silently lose the excess. Checked 2026-09-25: no truncation today (835 Active / 40 Archived / 12 Completed batches, all under the cap), but Active is at ~83% of it.
 - No retry/backoff on either endpoint — one transient blip fails the whole run.
 - Only `"test batch"` is filtered — no demo/dummy/sample/cbt_test/payment_test keyword filtering.
 - `tutor_id`'s real source field is explicitly unconfirmed in the code's own comment.
@@ -232,50 +232,74 @@ None — triggered manually, no cron/systemd/Task Scheduler entry, and no restar
 `credentials.yaml` holds the shared API key and is gitignored. No PII beyond tutor names — no
 individual student records. `log_progress()` never prints credential values.
 
-## 18. Raw API Payload (Skeleton)
+## 18. Raw API Payload (Captured Structure)
 
-**Not a captured live response** — built from the field names already confirmed in Section 8's
-schema table, not a fresh call. Two endpoints, two shapes:
+**Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Catalogue** (`.../institute/483/courses/catalogue`):
+**Catalogue** (`GET .../institute/483/courses/catalogue`) — identical shape to the one documented in
+`COURSE_CATALOGUE_DATA.md` (list under `response`, Title-Case field names such as `Bundle id`, `Course Name`,
+`Status`, `Tutord Ids`). Not repeated in full here.
+
+**Batches** (`GET .../short/masterbatch?status={0|1|3}&page=1&per_page=1000`) — nested: each course holds its
+batches. This pipeline's `batch_id` is the batch object's `class_id`; `batch_enrollment_count` is
+`admitted_students`.
+
 ```json
 {
-  "_comment": "TO CONFIRM: real top-level wrapper key/shape",
-  "data": [
+  "code": "\"200\" (string, not int)",
+  "message": "<str>",
+  "courses": [
     {
-      "Course_Ids": "<TO CONFIRM>",
-      "Course Name": "<TO CONFIRM>",
-      "Tutors": "<TO CONFIRM>",
-      "Tutord Ids": "<TO CONFIRM: Edmingle's own spelling, not a typo>",
-      "Subject": "<TO CONFIRM>",
-      "Level": "<TO CONFIRM>",
-      "Language": "<TO CONFIRM>",
-      "Status": "<TO CONFIRM>",
-      "Duration": "<TO CONFIRM>"
+      "bundle_id": "<int>",
+      "bundle_name": "<str>",
+      "is_woolf_accredited": "<int>",
+      "batch": [
+        {
+          "class_id": "<int>",
+          "class_name": "<str>",
+          "start_date": "<int>",
+          "end_date": "<int>",
+          "individual_batch_attendance": "<int>",
+          "tutor_id": "<int>",
+          "tutor_name": "<str>",
+          "online_only": "<int>",
+          "classes": [
+            [
+              "<str>"
+            ]
+          ],
+          "mb_archived": "<int>",
+          "attendance_progress_arr": [
+            "<int>"
+          ],
+          "progress": [
+            "<str>"
+          ],
+          "organization_id": "<int>",
+          "registered_students": "<int>",
+          "admitted_students": "<int>",
+          "total_classes": "<int>",
+          "completed_classes": "<int>",
+          "cancelled_classes": "<int>",
+          "attendance_progress": "<int>"
+        }
+      ],
+      "online_only": "<int>"
     }
-  ]
+  ],
+  "page_context": {
+    "page": "<int>",
+    "per_page": "<int>",
+    "has_more_page": "<bool>",
+    "total_rows": "<int>"
+  }
 }
 ```
 
-**Masterbatch** (`.../short/masterbatch?status={0/1/3}&page=1&per_page=1000`):
-```json
-{
-  "_comment": "TO CONFIRM: real pagination field names -- page=1 never advances in code, unconfirmed if that's a bug or a documented API limit",
-  "data": [
-    {
-      "bundle_id": "<TO CONFIRM>",
-      "bundle_name": "<TO CONFIRM>",
-      "batch_id": "<TO CONFIRM>",
-      "batch_name": "<TO CONFIRM>",
-      "start_date": "<TO CONFIRM: epoch>",
-      "end_date": "<TO CONFIRM: epoch>",
-      "tutor_name": "<TO CONFIRM>",
-      "tutor_id": "<TO CONFIRM>",
-      "admitted_students": "<TO CONFIRM: becomes batch_enrollment_count>"
-    }
-  ]
-}
-```
+**Pagination check (2026-09-25):** `page_context.total_rows` was **835** (Active), **40** (Archived) and **12**
+(Completed) — all under the hardcoded `per_page=1000` with `has_more_page=false`, so nothing is being silently
+truncated today. Active batches are at ~83% of that cap; if they ever exceed 1,000 the excess would be lost
+because `page` never advances.
 
 ## 19. Future Improvements
 
