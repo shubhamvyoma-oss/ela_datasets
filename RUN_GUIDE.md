@@ -53,7 +53,7 @@ tmux attach -t <folder>      return to the session
 Notes:
 - `enrollments_reports` takes **`DD-MM-YYYY`** dates (every other dataset uses `YYYY-MM-DD`).
 - `country_wise_data` Stage 2 needs a fresh `Student-Export*.csv` in `input/`; run the stages in order.
-- `session_wise_attendance` stages must run in order; `attendance_crossvalidation.py` is a manual spot-check that currently gets HTTP 404.
+- `session_wise_attendance` stages must run in order; `attendance_crossvalidation.py` is a manual spot-check, not a stage.
 - `edmingle_api_key_generator` refuses to rotate while any pipeline is running (exit code 2); rotating revokes the old key at once. Flags: `--check-config`, `--verify-only`, `--force`.
 - After every rotation, update the key copy in `/home/projectdev/attendance_dataset/credentials.yaml` (the standalone attendance copy).
 - Long runs resume: re-run the same command after a crash and it continues from its checkpoint.

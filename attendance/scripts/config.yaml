@@ -16,7 +16,8 @@
 
 # ── API ──────────────────────────────────────────────────────
 api:
-  url:    "https://vyoma-api.edmingle.com/nuSource/api/v1/report/csv"
+  # The endpoint is <edmingle.base_url from credentials.yaml>/report/csv -- nothing to set here.
+  # (Add `url: ...` only to point at a different endpoint.)
 
   # Request timeout. Edmingle can be slow on large date windows.
   timeout_seconds: 60

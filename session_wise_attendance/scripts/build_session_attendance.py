@@ -51,6 +51,7 @@ from pipeline_common import (
     PipelineRunLogger,
     RateLimiter,
     load_config,
+    require_config,
     resolve_output_folder,
     send_run_report,
 )
@@ -111,7 +112,7 @@ def main():
 
     config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
-    org_id = config.get("org_id", 683)
+    org_id = require_config(config, "org_id")
 
     output_folder = resolve_output_folder(config, Path(__file__))
 

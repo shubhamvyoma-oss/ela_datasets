@@ -142,7 +142,7 @@ def load_config(config_path: Path) -> dict:
     with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
 
-    required = ["base_url", "filter_key", "start_date", "end_date"]
+    required = ["filter_key", "start_date", "end_date"]
     missing = [k for k in required if k not in cfg or cfg[k] in ("", None)]
     if missing:
         sys.exit(f"Config is missing required key(s): {', '.join(missing)}")
@@ -156,6 +156,7 @@ def load_config(config_path: Path) -> dict:
     edmingle_creds = common.load_credentials(CREDENTIALS_PATH)
     cfg["apikey"] = edmingle_creds.get("api_key")
     cfg["orgid"] = edmingle_creds.get("organization_id")
+    cfg["base_url"] = common.edmingle_settings(path=CREDENTIALS_PATH)["base_url"]
 
     if not cfg["apikey"] or cfg["apikey"] == "PASTE_YOUR_APIKEY_HERE":
         sys.exit(

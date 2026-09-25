@@ -78,9 +78,9 @@ intended consumers, and don't exist yet.
 - **Stage 2 CLI:** `--in`, `--out`, `--limit`, `--calls_per_minute`, `--restart`, `--apikey`.
 - **Stage 3 CLI:** `--in`, `--start`/`--end` (required), `--out`, `--limit`, `--calls_per_minute`, `--restart`, `--apikey`.
 - **Spot-check CLI:** `--class_id` (optional), `--start`/`--end` (required), `--apikey`, `--out`.
-- **`../../credentials.yaml`:** `api_key`, `organization_id`, `institute_id`, optional `base_url`.
+- **`../../credentials.yaml`:** `api_key`, `organization_id`, `institute_id`, `base_url` — all required (no built-in fallback ids or URL; a missing one exits with a message). `--apikey` only overrides the key.
 - **`notifications.yaml`:** merged onto `config["smtp"]` only if `channels.email.enabled`.
-- **Hardcoded:** `BATCH_IDS_TO_EXCLUDE` (20 values), `NOT_CONDUCTED_STATUSES={2,3}`, fallback org/institute ids.
+- **Hardcoded:** `BATCH_IDS_TO_EXCLUDE` (20 values), `NOT_CONDUCTED_STATUSES={2,3}`.
 - `config.yaml` was removed 2026-09-23 — its tunables were either unread by any script or already had a safe inline default.
 
 ## 8. Data Transformation, Output & Schema
@@ -160,7 +160,7 @@ python3 build_course_catalog.py
 python3 resolve_class_ids.py
 python3 build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD
 
-# Standalone spot-check (not part of the ordered run; see the defect in Section 19)
+# Standalone spot-check (not part of the ordered run)
 python3 attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end YYYY-MM-DD
 ```
 Resume after a crash/429/Ctrl+C: re-run the same command — Stages 2/3 skip processed rows; `--restart` wipes progress; Stage 1 has no row-level resume.
@@ -220,13 +220,13 @@ None — all stages and the spot-check tool are run manually, in order, whenever
 
 ## 18. Security Considerations
 
-The API key is sent via headers/params only, never logged. `../notifications.yaml` is `chmod 600`. None of the three output CSVs contain individual student PII (course/batch/session level). The placeholder SMTP addresses mean no run-report email leaves this pipeline — an availability concern, not a data exposure.
+The API key is sent in headers only (never in the URL since 2026-09-25, so it cannot appear in a logged URL or exception) and is never logged. `../notifications.yaml` is `chmod 600`. None of the three output CSVs contain individual student PII (course/batch/session level). The placeholder SMTP addresses mean no run-report email leaves this pipeline — an availability concern, not a data exposure.
 
 ## 19. Raw API Payload (Captured Structure)
 
 **Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Stage 1 catalogue** (`GET .../institute/483/courses/catalogue`) — same shape as `COURSE_CATALOGUE_DATA.md`
+**Stage 1 catalogue** (`GET .../institute/<institute_id>/courses/catalogue`) — same shape as `COURSE_CATALOGUE_DATA.md`
 (Title-Case fields under `response`). **Stage 1 batches** (`GET .../short/masterbatch?status=...`) — same nested
 shape as `COURSE_BATCH_MERGE.md` (`courses[].batch[]`, plus `page_context`); not repeated here.
 
@@ -383,10 +383,9 @@ sessions inside the window. The `message` field is spelled `"Sucess"` by Edmingl
 }
 ```
 
-**Possible defect in `attendance_crossvalidation.py` (not changed):** `fetch_attendance_summary()` sends only an
-`apikey` header. When tested with that alone this endpoint returned **HTTP 404 `"You are not a part of this
-org"`**; adding the `orgid`/`ORGID` headers made it return the payload above. The spot-check's
-attendancedet comparison is therefore likely failing today.
+**Fixed 2026-09-25:** `fetch_attendance_summary()` used to send only an `apikey` header (plus the key in the URL) and got
+**HTTP 404 `"You are not a part of this org"`**. It now sends the `orgid`/`ORGID` headers too (via `auth_headers()`), takes
+the organization id as its second argument, and returns the payload above (verified live: 7 fields).
 
 ## 20. Future Improvements
 

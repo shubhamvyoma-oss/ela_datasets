@@ -16,7 +16,8 @@ python3 build_course_catalog.py                                              # �
 python3 resolve_class_ids.py                                                 # → output/class_id_lookup.csv
 python3 build_session_attendance.py --start 2026-01-01 --end 2026-08-31      # → output/session_wise_attendance_data.csv
 ```
-`attendance_crossvalidation.py` is a manual spot-check, not a stage; it currently gets HTTP 404 (sends only the `apikey` header), so don't rely on it.
+`attendance_crossvalidation.py` is a manual spot-check, not a stage (its earlier HTTP 404 was fixed on 2026-09-25):
+`python3 attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end YYYY-MM-DD`
 
 ## Check
 Each stage's log in `output/logs/<stage>/` ends with a `[RESULT]`/`[TOTAL]` line and has no `[ERROR]`.

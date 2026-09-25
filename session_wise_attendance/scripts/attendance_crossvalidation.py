@@ -56,16 +56,18 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
+    BASE_URL,
     PipelineRunLogger,
+    auth_headers,
     load_config,
     parse_retry_after_seconds,
+    require_config,
     resolve_output_folder,
     send_run_report,
 )
 
 STAGE_NAME = "attendance_crossvalidation"
 SCRIPT_DIR = Path(__file__).parent
-BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"  # matches your other calls
 ORG_ATTENDANCES_ENDPOINT = f"{BASE_URL}/organization/attendances"
 
 
@@ -91,20 +93,13 @@ def fetch_org_attendances(apikey: str, org_id: int, start_ts: int, end_ts: int,
     during an active block."""
     params = {
         "org_id": org_id,
-        "apikey": apikey,
         "start": start_ts,
         "end": end_ts,
     }
     if class_id is not None:
         params["class_id"] = class_id
 
-    # This endpoint's docs show apikey/orgid as HEADERS (unlike report_type=55,
-    # which is query-param-only) — send both to cover whichever it actually checks.
-    headers = {
-        "apikey": apikey,
-        "orgid": str(org_id),
-        "ORGID": str(org_id),
-    }
+    headers = auth_headers(apikey, org_id)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -147,7 +142,7 @@ NOT_CONDUCTED_STATUSES = {2, 3}  # Postponed, Cancelled
 ATTENDANCE_DET_ENDPOINT = f"{BASE_URL}/bundle/general/attendancedet"
 
 
-def fetch_attendance_summary(apikey: str, class_id: int, start_date: str, end_date: str,
+def fetch_attendance_summary(apikey: str, org_id: int, class_id: int, start_date: str, end_date: str,
                               max_retries: int = 3) -> dict:
     """Calls /bundle/general/attendancedet — Edmingle's own aggregated
     scheduled/cancelled/signed-in counts for a class_id. This is the
@@ -155,13 +150,12 @@ def fetch_attendance_summary(apikey: str, class_id: int, start_date: str, end_da
     session-by-session detail in /organization/attendances.
     Dates must be ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)."""
     params = {
-        "apikey": apikey,
         "start_date": f"{start_date}T00:00:00Z",
         "end_date": f"{end_date}T23:59:59Z",
         "top": 1,
         "class_id": class_id,
     }
-    headers = {"apikey": apikey}
+    headers = auth_headers(apikey, org_id)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -333,7 +327,7 @@ def main():
 
     config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
-    org_id = config.get("org_id", 683)
+    org_id = require_config(config, "org_id")
     out_filename = args.out or "attendance_spotcheck.csv"
 
     output_folder = resolve_output_folder(config, Path(__file__))
@@ -383,7 +377,7 @@ def main():
 
         # --- Cross-check against Edmingle's own aggregate summary, if class_id was given ---
         if args.class_id is not None:
-            summary_det = fetch_attendance_summary(apikey, args.class_id, args.start, args.end)
+            summary_det = fetch_attendance_summary(apikey, org_id, args.class_id, args.start, args.end)
             if summary_det:
                 scheduled = summary_det.get("sessions_scheduled")
                 cancelled = summary_det.get("sessions_cancelled")

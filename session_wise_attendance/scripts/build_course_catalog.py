@@ -44,17 +44,18 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
+    BASE_URL,
     PipelineRunLogger,
     RateLimiter,
     load_config,
     parse_retry_after_seconds,
+    require_config,
     resolve_output_folder,
     send_run_report,
 )
 
 STAGE_NAME = "build_course_catalog"
 SCRIPT_DIR = Path(__file__).parent
-BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"
 DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
 
 # ── Final output columns — matches vyoma_masters.csv exactly ────────
@@ -363,8 +364,8 @@ def main():
 
     config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
-    org_id = config.get("org_id", 683)
-    institute_id = config.get("institute_id", 483)
+    org_id = require_config(config, "org_id")
+    institute_id = require_config(config, "institute_id")
 
     if not apikey:
         print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")

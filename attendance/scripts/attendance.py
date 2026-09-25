@@ -158,9 +158,10 @@ def load_config(config_path: str) -> dict:
     creds_path = script_dir.parent.parent / "credentials.yaml"
     if not creds_path.exists():
         sys.exit(f"\nShared credentials file not found: {creds_path}\n")
-    edmingle_cfg = common.load_credentials(creds_path)
-    cfg["api"]["key"]    = edmingle_cfg.get("api_key", "")
-    cfg["api"]["org_id"] = str(edmingle_cfg.get("organization_id", ""))
+    edmingle = common.edmingle_settings(path=creds_path)
+    cfg["api"]["key"]    = edmingle["api_key"]
+    cfg["api"]["org_id"] = edmingle["organization_id"]
+    cfg["api"].setdefault("url", f"{edmingle['base_url']}/report/csv")
 
     # Per-pipeline notification config, in this pipeline's own folder.
     notif_path = common.REPO_ROOT / "attendance" / "notifications.yaml"
@@ -187,8 +188,7 @@ def load_config(config_path: str) -> dict:
     cfg["email"]["notify_on_completion"] = email_channel.get(
         "notify_on_completion", cfg["email"].get("notify_on_completion", True))
 
-    required = [("api", "url"),
-                ("paths", "output_folder"), ("paths", "log_folder")]
+    required = [("paths", "output_folder"), ("paths", "log_folder")]
     missing = [f"{a}.{b}" for a, b in required
                if not str(cfg.get(a, {}).get(b, "")).strip()]
     if missing:
@@ -528,8 +528,6 @@ def wait_for_connection(cfg: dict, log: logging.Logger, context: str = ""):
 def _day_params(date_str: str, cfg: dict) -> dict:
     day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=IST)
     return {
-        "apikey":          cfg["api"]["key"],
-        "ORGID":           cfg["api"]["org_id"],   # must be uppercase
         "report_type":     55,
         "organization_id": int(cfg["api"]["org_id"]),
         "start_time":      int(day.replace(hour=0,  minute=0,  second=0).timestamp()),
@@ -584,6 +582,7 @@ def fetch_one_day(
         attempt += 1
         try:
             resp = session.get(api_cfg["url"], params=params,
+                               headers=common.auth_headers(api_cfg["key"], api_cfg["org_id"]),
                                timeout=api_cfg["timeout_seconds"])
 
             # ── HTTP status ──────────────────────────────────────────────

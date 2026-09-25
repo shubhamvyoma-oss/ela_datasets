@@ -1,5 +1,4 @@
 {
-  "base_url": "https://vyoma-api.edmingle.com/nuSource/api/v1",
   "filter_key": "geoLocationInfo.country",
   "sort_order": -1,
   "per_page": 500,

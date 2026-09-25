@@ -167,9 +167,10 @@ DEFAULT_FILES = {
     "legacy_page_state":     "PageNo.txt",                                 # old page number tracker
 }
 
-# Edmingle API endpoints for Vyoma organisation (org ID 683)
-STUDENTS_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/organization/students"
-COURSES_URL  = "https://vyoma-api.edmingle.com/nuSource/api/v1/admin/classes/attendance"
+# Edmingle API endpoints, built from edmingle.base_url in credentials.yaml
+_BASE_URL    = common.edmingle_settings()["base_url"]
+STUDENTS_URL = f"{_BASE_URL}/organization/students"
+COURSES_URL  = f"{_BASE_URL}/admin/classes/attendance"
 
 # HTTP codes where retrying will never succeed — raise error immediately
 PERMANENT_HTTP_STATUSES = {400, 401, 403, 404}
@@ -227,15 +228,14 @@ def run_startup_checks(config: dict[str, Any]) -> None:
     # Check 3 — API key must be valid before starting 80-hour run
     api_key = str(config.get("api_key", ""))
     org_id  = str(config.get("organization_id", ""))
-    print(f"  API key (last 8) : ...{api_key[-8:]}")
+    print(f"  API key          : {'present' if api_key else 'MISSING'}")
     print(f"  Organisation ID  : {org_id}")
     try:
         # Fetch just 1 student as a lightweight key validation test
         resp = requests.get(
             STUDENTS_URL,
+            headers=common.auth_headers(api_key, org_id),
             params={
-                "apikey":          api_key,
-                "ORGID":           org_id,
                 "organization_id": org_id,
                 "per_page":        1,
                 "page":            1,

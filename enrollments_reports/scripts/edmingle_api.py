@@ -17,9 +17,11 @@ from typing import Any
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from edmingle_constants import BASE_URL, PERMANENT_HTTP_STATUSES, TRANSIENT_HTTP_STATUSES
+from edmingle_constants import ENROLLMENT_PATH, PERMANENT_HTTP_STATUSES, TRANSIENT_HTTP_STATUSES
 
-from common import RollingRateLimiter
+from common import RollingRateLimiter, edmingle_settings
+
+ENROLLMENT_URL = edmingle_settings()["base_url"] + ENROLLMENT_PATH
 
 
 class PermanentAPIError(RuntimeError):
@@ -64,7 +66,7 @@ def fetch_page(
         attempt += 1
         rate_limiter.acquire()
         try:
-            resp = session.get(BASE_URL, params=params, headers=headers, timeout=timeout)
+            resp = session.get(ENROLLMENT_URL, params=params, headers=headers, timeout=timeout)
         except requests.RequestException as exc:
             logger.warning(f"[{context}] network error ({type(exc).__name__}); "
                             f"retrying in {delay:.1f}s (attempt {attempt})")

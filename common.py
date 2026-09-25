@@ -52,6 +52,30 @@ def load_credentials(path: str | Path | None = None) -> dict:
     return data.get("edmingle", {})
 
 
+def edmingle_settings(need_institute: bool = False, path: str | Path | None = None) -> dict:
+    """The Edmingle settings every pipeline shares, read only from credentials.yaml:
+    api_key, organization_id (str), institute_id (str), base_url (no trailing slash).
+    Exits with a clear message if base_url or organization_id (and institute_id, when
+    need_institute) is missing -- there are deliberately no built-in fallback ids or URLs."""
+    creds = load_credentials(path)
+    needed = ["base_url", "organization_id"] + (["institute_id"] if need_institute else [])
+    missing = [k for k in needed if not creds.get(k)]
+    if missing:
+        raise SystemExit(f"credentials.yaml is missing edmingle.{', edmingle.'.join(missing)}")
+    return {
+        "api_key": str(creds.get("api_key", "")),
+        "organization_id": str(creds["organization_id"]),
+        "institute_id": str(creds.get("institute_id", "")),
+        "base_url": str(creds["base_url"]).rstrip("/"),
+    }
+
+
+def auth_headers(api_key: str, org_id: str | int) -> dict:
+    """Auth headers accepted by every Edmingle endpoint used here. The key goes in headers,
+    never in the URL, so it cannot end up in a logged URL or a requests exception message."""
+    return {"apikey": str(api_key), "orgid": str(org_id), "ORGID": str(org_id)}
+
+
 def load_notifications(pipeline_name: str) -> dict:
     """Load <pipeline_name>/notifications.yaml from the repo root (that pipeline's own folder,
     a sibling of its scripts/ and output/ folders). Returns {} if the file is missing, matching

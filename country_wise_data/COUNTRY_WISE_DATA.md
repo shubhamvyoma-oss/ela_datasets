@@ -49,7 +49,7 @@ flowchart TD
 | Path | Purpose |
 |---|---|
 | `scripts/ip_driven_country_data.py` | Stage 1 — paginated Edmingle geo-IP pull, checkpointed/resumable. |
-| `scripts/ip_driven_country_data_config.json` | Stage 1 config (`base_url`, dates, pagination, rate limit). |
+| `scripts/ip_driven_country_data_config.json` | Stage 1 config (dates, pagination, rate limit; the base URL comes from `credentials.yaml`). |
 | `scripts/dial_code_to_country.py` | Stage 2 — dial-code-to-country from a manual export. |
 | `scripts/merge_country_data.py` | Stage 3 — joins Stage 1 + Stage 2 on email. |
 | `input/Student-Export.csv` | Manual Edmingle admin-panel roster export (gitignored, real PII). |
@@ -92,7 +92,7 @@ flowchart TD
 | Source | Key(s) | Purpose |
 |---|---|---|
 | Stage 1 CLI | `--config` (default `ip_driven_country_data_config.json`) | Points at the JSON config. |
-| Stage 1 config | `base_url`, `filter_key`, `sort_order`, `per_page`, `start_date`/`end_date`, `rate_limit_per_minute`, `output_csv`, `checkpoint_file` | All non-secret Stage-1 behaviour. |
+| Stage 1 config | `filter_key`, `sort_order`, `per_page`, `start_date`/`end_date`, `rate_limit_per_minute`, `output_csv`, `checkpoint_file` | All non-secret Stage-1 behaviour. |
 | Stage 1 credentials | `../../credentials.yaml` → `apikey`/`orgid` | Exits if missing or still the placeholder string. |
 | Stage 2 CLI | `--input`, `--output`, `--dial-code-column` (default `"Contact Number Dial Code"`), `--encoding` | File selection and column mapping. |
 | Stage 3 CLI | `--dial-input`, `--ip-input`, `--output` | Input/output file paths. |

@@ -41,7 +41,7 @@ within this repo consumes it.
 | `scripts/edmingle_export.py` | Orchestrator — config, checkpoint, logging, the `EdmingleExportRun` class. |
 | `scripts/edmingle_api.py` | `fetch_page()` — one (chunk, page) GET with error classification and 429 backoff. |
 | `scripts/edmingle_chunker.py` | Splits a date range into `chunk_days` windows, persisted to `.chunks.json`. |
-| `scripts/edmingle_constants.py` | `BASE_URL`, date format, output column order, HTTP status sets. |
+| `scripts/edmingle_constants.py` | `ENROLLMENT_PATH` (appended to `credentials.yaml`'s `base_url`), date format, output column order, HTTP status sets. |
 | `scripts/edmingle_io_utils.py` | `truncate_to_offset()` plus re-exported `common.py` helpers. |
 | `output/edmingle_enrollment_report.csv` | Fixed-name output (8,573 lines incl. header, last written 2026-09-08). |
 | `output/*.checkpoint.json` / `*.chunks.json` / `.log` | Resume state, chunk plan, run log — all derived from the CSV's own path. |

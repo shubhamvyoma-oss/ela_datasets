@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart TD
-    A[main] --> B[fetch_courses: GET institute/483/courses/catalogue?org_id=ORGANIZATION_ID]
+    A[main] --> B[fetch_courses: GET institute/&lt;institute_id&gt;/courses/catalogue?org_id=ORGANIZATION_ID]
     B -->|status != 200| C[print error, return empty list -> 'No data returned from API', exit]
     B -->|status == 200| D[courses_list = response.json data]
     D --> E[pd.json_normalize: flatten nested dicts to dot-notation columns]
@@ -28,7 +28,7 @@ flowchart TD
 |---|---|
 | `scripts/course_catalogue_data.py` | Entire pipeline — fetch, flatten, clean, timestamp, save. |
 | `output/course_catalogue_data.csv` | The only file this pipeline produces. |
-| `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID` (`INSTITUTE_ID` loaded but unused). |
+| `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID`/`base_url`, read through `common.edmingle_settings()` (exits if one is missing). |
 | `../../common.py` | Supplies `load_credentials()` only. |
 | `../../.venv/` (venv, primary), `../../docker/Dockerfile`/`../../docker/requirements.txt` (Docker, alternative) | The repo's runtime environment — **required** to run this script (see Section 12). |
 
@@ -36,11 +36,11 @@ flowchart TD
 
 | Source | Endpoint | Method | Auth | Parameters | Pagination | Rate Limit |
 |---|---|---|---|---|---|---|
-| Course catalogue | `.../institute/483/courses/catalogue` (institute id hardcoded) | GET | `apikey` header; `ORGID` header **hardcoded to `"683"`, not the credentials-driven value** | `org_id` query param — the *only* place the real `ORGANIZATION_ID` is actually used | Single call returns the full catalogue | Not identified — no retry/backoff of any kind |
+| Course catalogue | `<base_url>/institute/<institute_id>/courses/catalogue` (both from `credentials.yaml`) | GET | `apikey` and `ORGID` headers, both from `credentials.yaml` | `org_id` query param (same organization id) | Single call returns the full catalogue | Not identified — no retry/backoff of any kind |
 
 ## 5. Extraction Process
 
-1. `fetch_courses()` — one GET with `apikey` + hardcoded `ORGID: "683"` and `params={"org_id": ORGANIZATION_ID}`. Non-200 → prints the body, returns `[]`, and `main()` exits with "No data returned from API", writing nothing.
+1. `fetch_courses()` — one GET with `apikey` + `ORGID` headers and `params={"org_id": ORGANIZATION_ID}` (all three from `credentials.yaml`). Non-200 → prints the body, returns `[]`, and `main()` exits with "No data returned from API", writing nothing.
 2. `response.json()["response"]` is the record list; `pd.json_normalize()` flattens nested dicts to dot-notation columns (list-valued fields stay as raw Python lists).
 3. `clean_column_names()` lower-cases names and replaces spaces with underscores — the only transformation.
 4. An `ingested_at` column is appended and the result written with `df.to_csv()` (UTF-8, no BOM).
@@ -55,8 +55,8 @@ flowchart TD
 
 | Source | Key(s) | Purpose |
 |---|---|---|
-| `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id` (loaded, never referenced again) | Auth for the catalogue call. |
-| Hardcoded | `BASE_URL` (institute id `483` baked in), `HEADERS["ORGID"] = "683"` (ignores the credentials-driven org id), `OUTPUT_FILE` | All runtime behaviour — no config file, no CLI args. |
+| `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id`, `edmingle.base_url` | Auth and URL for the catalogue call. |
+| Hardcoded | `OUTPUT_FILE` only — no organization id, institute id or base URL is written into the script (fixed 2026-09-25) | All runtime behaviour — no config file, no CLI args. |
 
 ## 8. Data Transformation, Output & Schema
 
@@ -96,13 +96,12 @@ output schema, unchecked.
 **Confirmed limitations:**
 - No retry/backoff and no `try/except` at all around the network call or JSON parsing — any failure beyond a non-200 status stops the script with an unhandled exception.
 - Output shape is entirely dictated by Edmingle's response that day — an upstream field change silently changes the output columns, undetected.
-- The `ORGID` header (hardcoded `"683"`) and the `org_id` query parameter (from credentials) could disagree if the real org id ever changes — unverified which one Edmingle actually honors.
 - No test/demo course filtering of any kind.
 - List-valued fields aren't flattened — unusable directly from the CSV without further parsing.
 - **`wc -l` is not a valid row count** (embedded newlines) — use the script's printed count or a CSV-aware tool.
 - The VPS's system Python lacks `pandas`; the script needs the project's `.venv` (or the Docker image) — Section 12.
 
-**Requires confirmation:** whether `ORGID` should use the real organization id instead of `"683"`; whether `INSTITUTE_ID` should replace the hardcoded `483`.
+**Requires confirmation:** none currently.
 
 ## 10. Error Handling & Logging
 
@@ -148,8 +147,6 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 ## 14. Important Business / Technical Rules
 
 - No business rules exist here — deliberately the raw, unfiltered flatten, unlike `course_batch_merge.py`'s filtering/status logic.
-- `ORGID` header is hardcoded to `"683"`, not `credentials.yaml`'s `ORGANIZATION_ID` (used only in the query param) — a latent inconsistency, not a deliberate rule.
-- `INSTITUTE_ID` is loaded but never used — `483` is hardcoded into `BASE_URL` instead, the same pattern seen in `course_batch_merge.py`.
 - Whatever Edmingle returns becomes the columns, verbatim — no "expected vs. unexpected field" concept.
 
 ## 15. Troubleshooting
@@ -164,9 +161,7 @@ None — triggered manually, no cron/systemd/Task Scheduler entry.
 
 ## 16. Maintenance Guide
 
-- **Endpoint/params change** → `BASE_URL` and the `HEADERS`/`params` construction.
-- **Fix the `ORGID` inconsistency** → change the hardcoded `"683"` to `str(ORGANIZATION_ID)`, once confirmed safe.
-- **Wire in `INSTITUTE_ID`** → replace the hardcoded `483` in `BASE_URL`.
+- **Endpoint/params change** → `BASE_URL` and the `HEADERS`/`params` construction (org id, institute id and base URL come from `credentials.yaml`).
 - **Add error handling** → wrap `fetch_courses()`'s request/JSON parsing in `try/except`, consider retry/backoff similar to `attendance.py`.
 - **Adding a new dependency** → `.venv/bin/pip install <package>` and add it to `docker/requirements.txt` so both runtimes stay in sync.
 
@@ -179,7 +174,7 @@ only, no student records. No `print()` call includes credential values.
 
 **Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Endpoint:** `GET .../institute/483/courses/catalogue?org_id=<org>`, headers `apikey` + `ORGID`. The list is
+**Endpoint:** `GET .../institute/<institute_id>/courses/catalogue?org_id=<org>`, headers `apikey` + `ORGID`. The list is
 under **`response`** (566 records in this sample, matching the CSV's 566 rows). Raw field names are **Title Case
 with spaces** (`Bundle id`, `Course Name`); `course_catalogue_data.py` lower-cases and underscores them
 (`bundle_id`, `course_name`), which is why the CSV columns look different. Nearly every field is a string, even

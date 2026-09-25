@@ -18,13 +18,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "credentials.yaml"))
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, "..", "output", "course_catalogue_data.csv")
 
-_edmingle = common.load_credentials(CREDENTIALS_PATH)
-INSTITUTE_ID = int(_edmingle.get("institute_id", 0))
-ORGANIZATION_ID = int(_edmingle.get("organization_id", 0))
-API_KEY = _edmingle.get("api_key", "")
+_edmingle = common.edmingle_settings(need_institute=True, path=CREDENTIALS_PATH)
+ORGANIZATION_ID = int(_edmingle["organization_id"])
+API_KEY = _edmingle["api_key"]
 
-BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/institute/483/courses/catalogue"
-HEADERS = {"apikey": API_KEY, "ORGID": "683"}
+BASE_URL = f"{_edmingle['base_url']}/institute/{_edmingle['institute_id']}/courses/catalogue"
+HEADERS = {"apikey": API_KEY, "ORGID": _edmingle["organization_id"]}
 
 
 def fetch_courses():

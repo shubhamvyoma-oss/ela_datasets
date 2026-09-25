@@ -58,7 +58,7 @@ automatically.
 
 | Source | Endpoint | Method | Auth | Parameters | Pagination | Rate Limit |
 |---|---|---|---|---|---|---|
-| Edmingle reporting API | `.../report/csv` (`config.yaml api.url`) | GET | `apikey`/`ORGID` query params from shared `credentials.yaml` | `report_type=55`, `organization_id`, `start_time`/`end_time` (one IST day per call), `response_type=1` | None — one call per calendar day | Client-side pacing only (`rate_limit_sleep_seconds`, 2.5s); reacts to server `429`/`Retry-After`. Real Edmingle-side ceiling: requires confirmation. |
+| Edmingle reporting API | `<base_url>/report/csv` (`base_url` from `credentials.yaml`; `config.yaml api.url` only overrides it) | GET | `apikey`/`orgid`/`ORGID` **headers** from shared `credentials.yaml` (moved out of the URL 2026-09-25 — the endpoint accepts headers) | `report_type=55`, `organization_id`, `start_time`/`end_time` (one IST day per call), `response_type=1` | None — one call per calendar day | Client-side pacing only (`rate_limit_sleep_seconds`, 2.5s); reacts to server `429`/`Retry-After`. Real Edmingle-side ceiling: requires confirmation. |
 
 **Upstream:** Edmingle LMS, plus the shared `credentials.yaml`/`common.py`.
 
@@ -242,7 +242,7 @@ None — triggered manually. No unattended auto-restart wrapper exists (a stale 
 
 ## 16. Maintenance Guide
 
-- **Endpoint/params change** → `_day_params()` and `config.yaml api.url`.
+- **Endpoint/params change** → `_day_params()`; the URL comes from `credentials.yaml`'s `base_url` (or an `api.url` override in `config.yaml`).
 - **New/renamed status codes** → `pipeline.present_value`/`absent_value`/`late_value`; the hardcoded `E`/`OL`/`NA` codes live in `build_class_summary()` itself.
 - **Output schema change** → `OUTPUT_COLUMNS`/`SESSION_OUTPUT_COLUMNS` plus the summary-building functions.
 - **Retry/backoff tuning** → `config.yaml api.*`, no code change needed.

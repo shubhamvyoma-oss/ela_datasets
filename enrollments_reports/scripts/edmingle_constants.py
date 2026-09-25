@@ -5,7 +5,7 @@ Shared constants used by every other edmingle_*.py module. Nothing in here
 has side effects — just plain values.
 """
 
-BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/reports/enrollment"
+ENROLLMENT_PATH = "/reports/enrollment"  # appended to edmingle.base_url from credentials.yaml
 
 DATE_FMT = "%d-%m-%Y"  # DD-MM-YYYY, the format Edmingle's API expects
 

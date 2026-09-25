@@ -18,13 +18,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "credentials.yaml"))
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, "..", "output", "course_batch_merge.csv")
 
-_edmingle = common.load_credentials(CREDENTIALS_PATH)
-API_KEY = _edmingle.get("api_key", "")
-ORGANIZATION_ID = str(_edmingle.get("organization_id", ""))
-INSTITUTE_ID = str(_edmingle.get("institute_id", ""))
+_edmingle = common.edmingle_settings(need_institute=True, path=CREDENTIALS_PATH)
+API_KEY = _edmingle["api_key"]
+ORGANIZATION_ID = _edmingle["organization_id"]
 
-CATALOGUE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/institute/483/courses/catalogue"
-BATCHES_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1/short/masterbatch"
+CATALOGUE_URL = f"{_edmingle['base_url']}/institute/{_edmingle['institute_id']}/courses/catalogue"
+BATCHES_URL = f"{_edmingle['base_url']}/short/masterbatch"
 
 # Order/names match the verified 41-column reference file (vyoma_master.csv), used for Power BI.
 OUTPUT_COLUMNS = [

@@ -9,7 +9,7 @@ inline default.
 USAGE
     from pipeline_common import (
         load_config, parse_retry_after_seconds, resolve_output_folder,
-        RateLimiter, PipelineRunLogger, send_run_report,
+        RateLimiter, PipelineRunLogger, send_run_report, BASE_URL, auth_headers, require_config,
     )
 """
 
@@ -25,6 +25,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import common
 
 DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't be parsed
+
+# Read once, from credentials.yaml only (no built-in fallback URL or ids).
+BASE_URL = common.edmingle_settings()["base_url"]
+auth_headers = common.auth_headers  # re-exported for the stage scripts
+
+
+def require_config(config: dict, key: str):
+    """config[key] from credentials.yaml, or exit with a clear message -- no hardcoded fallback ids."""
+    value = config.get(key)
+    if not value:
+        sys.exit(f"[ERROR] {key} is missing: set edmingle.{'organization_id' if key == 'org_id' else key} "
+                 f"in ../../credentials.yaml")
+    return int(value)
 
 
 def load_config(script_dir: Path) -> dict:

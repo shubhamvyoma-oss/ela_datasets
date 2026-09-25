@@ -52,17 +52,19 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
+    BASE_URL,
     PipelineRunLogger,
     RateLimiter,
+    auth_headers,
     load_config,
     parse_retry_after_seconds,
+    require_config,
     resolve_output_folder,
     send_run_report,
 )
 
 STAGE_NAME = "resolve_class_ids"
 SCRIPT_DIR = Path(__file__).parent
-BASE_URL = "https://vyoma-api.edmingle.com/nuSource/api/v1"
 MASTERBATCH_ENDPOINT = f"{BASE_URL}/masterbatch"
 
 OUTPUT_COLUMNS = [
@@ -83,8 +85,8 @@ def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int,
     debug=True prints the full raw response regardless of outcome — used
     for the very first call of a run to diagnose silent empty-result issues."""
     url = f"{MASTERBATCH_ENDPOINT}/{batch_id}"
-    headers = {"apikey": apikey, "orgid": str(org_id), "ORGID": str(org_id)}
-    params = {"apikey": apikey, "org_id": org_id}
+    headers = auth_headers(apikey, org_id)
+    params = {"org_id": org_id}
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -187,7 +189,7 @@ def main():
 
     config = load_config(SCRIPT_DIR)
     apikey = args.apikey or config.get("api_key") or config.get("apikey")
-    org_id = config.get("org_id", 683)
+    org_id = require_config(config, "org_id")
 
     output_folder = resolve_output_folder(config, Path(__file__))
 

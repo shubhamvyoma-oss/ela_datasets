@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart TD
-    A[main] --> B[get_catalogue: GET institute/483/courses/catalogue]
+    A[main] --> B[get_catalogue: GET institute/&lt;institute_id&gt;/courses/catalogue]
     A --> C[get_all_batches: loop status 0/1/3]
     C --> C1[get_batches_by_status status=0 Active]
     C --> C2[get_batches_by_status status=1 Archived]
@@ -40,14 +40,14 @@ Power BI report (see Section 8) — not automated or confirmed from this repo.
 |---|---|
 | `scripts/Course_Batch_Merge.py` | Entire pipeline — fetch, merge, business rules, save, all in one file. |
 | `output/course_batch_merge.csv` | The only file this pipeline produces. |
-| `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID` via `common.load_credentials()`. |
+| `../../credentials.yaml` | Shared `API_KEY`/`ORGANIZATION_ID`/`INSTITUTE_ID`/`base_url` via `common.edmingle_settings()`. |
 | `../../common.py` | Supplies `load_credentials()` only — no rate limiter or atomic-write helpers used here. |
 
 ## 4. Source System
 
 | Source | Endpoint | Method | Auth | Parameters | Pagination | Rate Limit |
 |---|---|---|---|---|---|---|
-| Course catalogue | `.../institute/483/courses/catalogue` (institute id hardcoded) | GET | `apikey`/`ORGID` headers | None beyond headers | Single call returns the full catalogue | Not identified — no retry/backoff of any kind |
+| Course catalogue | `<base_url>/institute/<institute_id>/courses/catalogue` (both from `credentials.yaml`) | GET | `apikey`/`ORGID` headers | None beyond headers | Single call returns the full catalogue | Not identified — no retry/backoff of any kind |
 | Masterbatch | `.../short/masterbatch?status={0/1/3}&page=1&per_page=1000` | GET | Same headers | `status`, `page=1` (hardcoded, never incremented), `per_page=1000` | **`page=1` never advances** — a status with over 1,000 batches would silently lose the rest | Not identified |
 
 ## 5. Extraction Process
@@ -75,8 +75,8 @@ Power BI report (see Section 8) — not automated or confirmed from this repo.
 
 | Source | Key(s) | Purpose |
 |---|---|---|
-| `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id` (loaded but unused — see Section 14) | Auth for both endpoints. |
-| Hardcoded | `CATALOGUE_URL` (institute id `483` baked in), `BATCHES_URL`, `OUTPUT_COLUMNS` (41 columns), status map `{0,1,3}`, `page=1&per_page=1000` | All runtime behaviour — no config file, no CLI args. |
+| `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id`, `edmingle.base_url` | Auth and URLs for both endpoints. |
+| Hardcoded | `OUTPUT_COLUMNS` (41 columns), status map `{0,1,3}`, `page=1&per_page=1000` | All runtime behaviour — no config file, no CLI args. |
 
 ## 8. Data Transformation, Output & Schema
 
@@ -122,7 +122,6 @@ silently dropped; strict 41-column schema enforcement.
 - Only `"test batch"` is filtered — no demo/dummy/sample/cbt_test/payment_test keyword filtering.
 - `tutor_id`'s real source field is explicitly unconfirmed in the code's own comment.
 - **A mid-run failure is swallowed** — `main()`'s broad `except` prints and returns, exiting 0. A cron/scheduler watching only the exit code would never see this as a failure.
-- `INSTITUTE_ID` is loaded from credentials but never used — the id `483` is hardcoded into the URL instead.
 
 **Requires confirmation:** whether any status currently has, or will have, more than 1,000 batches; the correct Edmingle field name for tutor id.
 
@@ -141,7 +140,7 @@ silently dropped; strict 41-column schema enforcement.
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`institute_id` is loaded but unused). No config file, `input/` folder or notification setup needed. **The filename is capitalised** — `Course_Batch_Merge.py`; Linux is case-sensitive. No CLI arguments.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`api_key`, `organization_id`, `institute_id`, `base_url` are all required). No config file, `input/` folder or notification setup needed. **The filename is capitalised** — `Course_Batch_Merge.py`; Linux is case-sensitive. No CLI arguments.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -169,7 +168,6 @@ None — triggered manually, no cron/systemd/Task Scheduler entry, and no restar
 ## 14. Important Business / Technical Rules
 
 - Archived batches are deliberately included, unlike `session_wise_attendance`'s catalogue builder — the two are not expected to reconcile row-for-row, by design.
-- `INSTITUTE_ID` from credentials is never actually used — `483` is hardcoded in the URL; changing the credentials value would not follow through without a code edit.
 - `Final_Status` is asymmetric by design: the latest batch of a bundle gets the course's catalogue status; every other batch of that bundle is hardcoded `"Completed"` regardless of its real status.
 - `bundle_enrollment_count` sums across all three statuses, not just active enrollment.
 - Latest-batch tie-breaking on an exact `start_date` match depends on fetch order, not a deterministic rule.
@@ -201,7 +199,7 @@ individual student records. `log_progress()` never prints credential values.
 
 **Captured live from the API on 2026-09-25** (one read-only call, tiny page size). Structure only: field names and types, no values, so no student/teacher PII is recorded here. `<int>`/`<str>`/`<null>` are the types observed in the sample; a field seen as `<null>` may hold a value for other records.
 
-**Catalogue** (`GET .../institute/483/courses/catalogue`) — identical shape to the one documented in
+**Catalogue** (`GET .../institute/<institute_id>/courses/catalogue`) — identical shape to the one documented in
 `COURSE_CATALOGUE_DATA.md` (list under `response`, Title-Case field names such as `Bundle id`, `Course Name`,
 `Status`, `Tutord Ids`). Not repeated in full here.
 
