@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart TD
-    A[Operator runs edmingle_generate_api_key.py] --> B["validate_settings()<br/>checks HTTPS URL, timeout, email config"]
+    A[Operator runs edmingle_generate_api_key.py] --> B["validate_settings()<br/>checks HTTPS URLs and the email config"]
     B -->|fails| Z1[Exit 1 - failed safely, nothing changed]
     B -->|ok| C{--check-config flag?}
     C -->|yes| Z2[Print OK, exit 0 - no network/file/email]
@@ -24,9 +24,9 @@ flowchart TD
     E -->|200 + valid key| F["extract_api_key()<br/>validates code==200, 16-256 chars, no whitespace"]
     F --> G["update_shared_api_key()<br/>regex-replace api_key line in<br/>../../credentials.yaml"]
     G -->|write fails| Z4[Exit 1 - credentials.yaml unchanged]
-    G -->|write ok| K["verify_api_key()<br/>one read-only Edmingle call with the new key,<br/>up to 3 tries 5s apart"]
+    G -->|write ok| K["verify_api_key() via common.get_json<br/>one read-only Edmingle call with the new key,<br/>up to 3 tries 5s apart"]
     K -->|rejected| Z6["Exit 1 - key NOT emailed,<br/>notice email, credentials.yaml WAS updated"]
-    K -->|accepted| H["send_api_key_email()<br/>SMTP/STARTTLS notification with<br/>full key in body"]
+    K -->|accepted| H["send_api_key_email()<br/>plain-text mail through common.send_mail<br/>(SMTP/STARTTLS) with full key in body"]
     H -->|fails| Z5["Exit 1, but stderr states<br/>credentials.yaml WAS updated"]
     H -->|ok| I[Exit 0 - key rotated, checked and emailed]
 ```
@@ -38,14 +38,12 @@ flowchart TD
 
 | Path | Purpose |
 |---|---|
-| `scripts/edmingle_generate_api_key.py` | Entry point — validates settings, logs in, extracts/validates the key, orchestrates the write then the email. |
-| `scripts/edmingle_api_key_settings.py` | Loads settings from `credentials.yaml` and `../notifications.yaml`. |
+| `scripts/edmingle_generate_api_key.py` | Entry point — loads its settings (`credentials.yaml` tutor login/base URL, `../notifications.yaml`), validates them, logs in, extracts/validates the key, writes it, checks it, and sends the emails through `common.send_mail`. |
 | `scripts/edmingle_credentials_writer.py` | The only code allowed to write `credentials.yaml` — targeted regex replace of the `api_key` line only. |
-| `scripts/edmingle_api_key_email.py` | Builds and sends the key email and the key-free status notices (SMTP/STARTTLS). |
 | `scripts/edmingle_rotation_guard.py` | Refuses to rotate while another `ela_datasets` pipeline is running (reads `/proc`, Linux only). |
 | `../notifications.yaml` | This pipeline's own SMTP/recipient config (restricted permissions, not committed). |
 | `scripts/run_generate_and_email_api_key.bat` | Windows launcher for the full real run. |
-| `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py`, `test_rotation_guard.py` | Offline unit tests (33 total). |
+| `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py`, `test_rotation_guard.py` | Offline unit tests (34 total). |
 | `output/README.md` | Placeholder — this pipeline produces no data output. |
 | `output/rotation.log` | Written only by the monthly cron run (timestamp + the script's messages, never the key). |
 | `../../credentials.yaml` | Holds `tutor_login.{login_url,username,password}` (read) and `api_key` (rewritten). |
@@ -59,11 +57,11 @@ flowchart TD
 
 ## 5. Extraction Process
 
-1. `validate_settings()` fails fast (no network) if the login URL isn't HTTPS, the timeout isn't positive, or email sender/recipients are missing. `--check-config` stops here.
+1. `validate_settings()` fails fast (no network) if the login URL or base URL isn't HTTPS, the organization id is missing, or the SMTP host, sender, app password or recipients are missing. `--check-config` stops here.
 2. `read_credentials()` reads the tutor username/password (prompts via `getpass` if blank).
 3. `generate_api_key()` makes exactly one multipart POST; a `429` or any non-2xx status is terminal, no retry.
 4. `extract_api_key()` requires `code==200` and a 16–256 character, whitespace-free key.
-5. `update_shared_api_key()` rewrites the `api_key` line via regex — **before** the email, since the rotation is the operationally important step — then `verify_api_key()` checks the new key and `send_api_key_email()` sends the plaintext notification. If the write succeeds but a later step fails, stderr says the credential was already rotated.
+5. `update_shared_api_key()` rewrites the `api_key` line via regex — **before** the email, since the rotation is the operationally important step — then `verify_api_key()` checks the new key (through `common.get_json`, retrying 400s too, since a brand-new key may take a moment to activate) and `send_api_key_email()` sends the plaintext notification through the shared mailer (a failed delivery is an error here, unlike other pipelines' best-effort mail). If the write succeeds but a later step fails, stderr says the credential was already rotated.
 
 ## 6. Function Reference
 
@@ -72,7 +70,7 @@ flowchart TD
 - **`extract_api_key(payload)`** — requires `code==200` and a non-empty `user.apikey` of 16–256 chars with no whitespace; error messages are cut to 200 chars.
 - **`generate_api_key(username, password, session=None)`** — the single login POST; network errors, invalid JSON, `429` and non-2xx raise `ApiKeyGenerationError`, no retry.
 - **`update_shared_api_key(path, key)`** — refuses an empty key; regex-replaces exactly one `api_key: "..."` line (refuses on zero or several matches); writes via `.tmp` + `fsync` + `os.replace()`.
-- **`send_api_key_email(...)`** — plaintext message (username, timestamp, full key) via `smtplib.SMTP` with STARTTLS.
+- **`send_api_key_email(...)`** — plaintext message (username, timestamp, full key) via `common.send_mail` (SMTP with STARTTLS; login is the configured sender address); raises `EmailDeliveryError` if it was not delivered. `send_notice_email()` sends the key-free status notices the same way and never raises.
 
 ## 7. Configuration & Parameters
 
@@ -117,11 +115,12 @@ requirement before writing `credentials.yaml`, non-empty key before writing.
 |---|---|
 | `requests>=2.31,<3` | HTTP POST to the login endpoint |
 | `PyYAML>=6.0,<7` | Reading both YAML config files |
-| stdlib (`smtplib`, `ssl`, `re`, `getpass`, `argparse`, `json`) | Email, credential patching, CLI |
+| `common` (repo root) | `load_credentials`/`load_notifications`, `get_json` (key check), `send_mail` |
+| stdlib (`re`, `getpass`, `argparse`, `json`) | Credential patching, CLI |
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: fill in `../../credentials.yaml`'s `tutor_login` block (blank username/password forces a prompt) and `../notifications.yaml` (valid SMTP settings, at least one recipient). It also has its own `requirements.txt`, so it can run standalone (e.g. on Windows via `run_generate_and_email_api_key.bat`) as well as with the shared venv.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: fill in `../../credentials.yaml`'s `tutor_login` block (a blank username/password forces a prompt) and `../notifications.yaml` (valid SMTP settings, at least one recipient). It also has its own `requirements.txt`, so it can run standalone (e.g. on Windows via `run_generate_and_email_api_key.bat`) as well as with the shared venv.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -146,7 +145,7 @@ Short manual utility, so there is no tmux section.
 - **Next runs:** 2026-10-25, 2026-11-25, 2026-12-25 (03:30 UTC each).
 - **If a pipeline is running,** nothing is rotated: exit code 2, the reason goes to `output/rotation.log`, and a "SKIPPED" notice is emailed. There is no retry until next month — rotate by hand once it finishes if needed sooner.
 - **Emails:** the new key (after it was saved *and* checked), or a "SKIPPED" / "FAILED" / "FAILED - new key not accepted" notice. Notices never contain the key and need `app_password` set in `../notifications.yaml` (a scheduled run has nobody to prompt).
-- **Not yet exercised end to end:** the guard, key check, notices and cron entry passed 33 unit tests plus `--verify-only` and the guard against the real process table, but no full scheduled rotation has run since they were added.
+- **Not yet exercised end to end:** the guard, key check, notices and cron entry passed 34 unit tests plus `--verify-only` and the guard against the real process table, but no full scheduled rotation has run since they were added.
 
 ## 14. Important Business / Technical Rules
 
@@ -168,7 +167,7 @@ Short manual utility, so there is no tmux section.
 | Exit code 2, "Not rotating: these pipelines are running" | A pipeline (named in the message) is running | Wait for it to finish and run again; `--force` only if you accept it will fail |
 | "credentials.yaml WAS updated ... but Edmingle did not accept it" | Login worked but the new key is rejected | Old key is already revoked — check the tutor login and `credentials.yaml` on the server; `--verify-only` re-tests |
 | No email on the 25th | Cron didn't run, or the app password is blank/wrong | `output/rotation.log`; `crontab -l`; notices need `app_password` set in `../notifications.yaml` |
-| Unexpected interactive password prompt | A username/password/app-password is blank in the YAML | Populate the relevant file, or answer the prompt |
+| Unexpected interactive prompt | The tutor username/password is blank in `credentials.yaml` | Populate it, or answer the prompt (the email app password is never prompted for: it must be set in `notifications.yaml`) |
 
 ## 16. Maintenance Guide
 

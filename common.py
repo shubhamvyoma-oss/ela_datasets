@@ -267,8 +267,9 @@ def get_json(
                 continue
             if resp.status_code in permanent:
                 raise PermanentAPIError(f"{label} HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code)
+            snippet = f": {' '.join(resp.text.split())[:120]}" if getattr(resp, "text", "") else ""  # what Edmingle said (never the key)
             if resp.status_code != 200:
-                problem = f"HTTP {resp.status_code}"
+                problem = f"HTTP {resp.status_code}{snippet}"
             else:
                 try:
                     data = resp.json()
@@ -277,7 +278,7 @@ def get_json(
                 else:
                     if validate is None or validate(data):
                         return data
-                    problem = "unexpected response shape"
+                    problem = f"unexpected response shape{snippet}"
         if attempts and attempt >= attempts:
             raise RetriesExhausted(f"{label} failed after {attempt} attempts: {problem}")
         log.warning(f"{label} {problem} (attempt {attempt}); retrying in {wait:.1f}s")

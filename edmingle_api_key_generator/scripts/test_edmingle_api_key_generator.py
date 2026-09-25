@@ -6,8 +6,6 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-import edmingle_api_key_email as emailmod
-import edmingle_api_key_settings as settings
 import edmingle_generate_api_key as keymod
 
 
@@ -15,6 +13,8 @@ class FakeResponse:
     def __init__(self, status_code, payload):
         self.status_code = status_code
         self.payload = payload
+        self.text = json.dumps(payload)
+        self.headers = {}
 
     def json(self):
         return self.payload
@@ -30,36 +30,6 @@ class FakeSession:
         return self.response
 
 
-class FakeSMTP:
-    instances = []
-
-    def __init__(self, host, port, timeout):
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self.logged_in = None
-        self.sent = None
-        self.__class__.instances.append(self)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def ehlo(self):
-        return None
-
-    def starttls(self, context):
-        return None
-
-    def login(self, sender, password):
-        self.logged_in = (sender, password)
-
-    def send_message(self, message, from_addr, to_addrs):
-        self.sent = (message, from_addr, to_addrs)
-
-
 class ApiKeyGeneratorTests(unittest.TestCase):
     def test_exact_multipart_request_and_key_extraction(self):
         session = FakeSession(FakeResponse(200, {
@@ -71,7 +41,7 @@ class ApiKeyGeneratorTests(unittest.TestCase):
         self.assertEqual(result, "a" * 32)
         self.assertEqual(len(session.calls), 1)
         url, options = session.calls[0]
-        self.assertEqual(url, settings.EDMINGLE_LOGIN_URL)
+        self.assertEqual(url, keymod.EDMINGLE_LOGIN_URL)
         self.assertNotIn("data", options)
         multipart_value = options["files"]["JSONString"]
         self.assertIsNone(multipart_value[0])
@@ -93,7 +63,7 @@ class ApiKeyGeneratorTests(unittest.TestCase):
             keymod.extract_api_key({"code": 200, "message": "Login successful", "user": {}})
 
     def test_email_contains_full_key_and_no_login_password(self):
-        subject, body = emailmod.build_api_key_email(
+        subject, body = keymod.build_api_key_email(
             "b" * 32,
             "ELATEAM",
             datetime(2026, 8, 25, 10, 0, tzinfo=UTC),
@@ -103,28 +73,29 @@ class ApiKeyGeneratorTests(unittest.TestCase):
         self.assertIn("ELATEAM", body)
         self.assertNotIn("secret-login-password", body)
 
-    def test_smtp_delivery_uses_configured_recipients(self):
-        FakeSMTP.instances = []
-        with patch.object(emailmod.smtplib, "SMTP", FakeSMTP):
-            emailmod.send_api_key_email("c" * 32, "ELATEAM", "app-password")
-        smtp = FakeSMTP.instances[0]
-        self.assertEqual(smtp.logged_in, (settings.EMAIL_FROM, "app-password"))
-        self.assertEqual(smtp.sent[2], list(settings.EMAIL_TO))
-        self.assertIn("c" * 32, smtp.sent[0].get_content())
-
     def test_email_says_verified_only_when_it_was(self):
-        _, plain = emailmod.build_api_key_email("b" * 32, "ELATEAM")
-        _, checked = emailmod.build_api_key_email("b" * 32, "ELATEAM", verified=True)
+        _, plain = keymod.build_api_key_email("b" * 32, "ELATEAM")
+        _, checked = keymod.build_api_key_email("b" * 32, "ELATEAM", verified=True)
         self.assertNotIn("Verified", plain)
         self.assertIn("Verified", checked)
 
-    def test_notice_email_goes_to_the_configured_recipients(self):
-        FakeSMTP.instances = []
-        with patch.object(emailmod.smtplib, "SMTP", FakeSMTP):
-            emailmod.send_notice_email("[Vyoma Edmingle] SKIPPED", "attendance is running", "app-password")
-        message, _, recipients = FakeSMTP.instances[0].sent
-        self.assertEqual(recipients, list(settings.EMAIL_TO))
-        self.assertIn("attendance is running", message.get_content())
+    def test_key_email_goes_through_the_shared_mailer(self):
+        sent = []
+        with patch.object(keymod.common, "send_mail", lambda notifications, subject, body, *a: sent.append((subject, body)) or True):
+            keymod.send_api_key_email("c" * 32, "ELATEAM", verified=True)
+        self.assertIn("New API Key", sent[0][0])
+        self.assertIn("c" * 32, sent[0][1])
+
+    def test_a_key_email_that_could_not_be_delivered_is_an_error(self):
+        with patch.object(keymod.common, "send_mail", lambda *a, **k: False):
+            with self.assertRaises(keymod.EmailDeliveryError):
+                keymod.send_api_key_email("c" * 32, "ELATEAM")
+
+    def test_notice_email_never_raises_and_uses_the_shared_mailer(self):
+        sent = []
+        with patch.object(keymod.common, "send_mail", lambda notifications, subject, body, *a: sent.append((subject, body)) or False):
+            keymod.send_notice_email("[Vyoma Edmingle] SKIPPED", "attendance is running")
+        self.assertEqual(sent, [("[Vyoma Edmingle] SKIPPED", "attendance is running")])
 
 
 class FakeGetSession:
@@ -147,37 +118,44 @@ REJECTED = lambda: FakeResponse(400, {"code": 10002, "message": "invalid.credent
 class VerifyApiKeyTests(unittest.TestCase):
     KEY = "k" * 32
 
+    def setUp(self):
+        self.slept = []
+        patcher = patch.object(keymod.common.time, "sleep", self.slept.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_accepts_a_key_edmingle_answers_200_to_and_sends_it_in_the_headers(self):
         session = FakeGetSession(GOOD())
-        keymod.verify_api_key(self.KEY, session=session, sleep=lambda s: None)
+        keymod.verify_api_key(self.KEY, session=session)
         url, options = session.calls[0]
         self.assertTrue(url.endswith("/short/masterbatch"))
         self.assertEqual(options["headers"]["apikey"], self.KEY)
         self.assertEqual(options["params"]["per_page"], 1)
+        self.assertNotIn(self.KEY, url)
 
     def test_retries_in_case_a_new_key_needs_a_moment(self):
-        session, slept = FakeGetSession(REJECTED(), GOOD()), []
-        keymod.verify_api_key(self.KEY, session=session, sleep=slept.append, delay_seconds=5)
+        session = FakeGetSession(REJECTED(), GOOD())
+        keymod.verify_api_key(self.KEY, session=session)
         self.assertEqual(len(session.calls), 2)
-        self.assertEqual(slept, [5])
+        self.assertEqual(self.slept, [5])
 
     def test_rejected_key_raises_after_all_attempts_and_never_shows_the_key(self):
-        session, slept = FakeGetSession(REJECTED(), REJECTED(), REJECTED()), []
+        session = FakeGetSession(REJECTED(), REJECTED(), REJECTED())
         with self.assertRaises(keymod.ApiKeyVerificationError) as raised:
-            keymod.verify_api_key(self.KEY, session=session, sleep=slept.append)
+            keymod.verify_api_key(self.KEY, session=session)
         self.assertIn("invalid.credentials", str(raised.exception))
         self.assertNotIn(self.KEY, str(raised.exception))
         self.assertEqual(len(session.calls), 3)
-        self.assertEqual(len(slept), 2)
+        self.assertEqual(len(self.slept), 2)
 
     def test_network_error_then_success_is_accepted(self):
         session = FakeGetSession(keymod.requests.ConnectionError("down"), GOOD())
-        keymod.verify_api_key(self.KEY, session=session, sleep=lambda s: None)
+        keymod.verify_api_key(self.KEY, session=session)
 
     def test_http_200_with_an_error_code_in_the_body_is_not_accepted(self):
         session = FakeGetSession(*[FakeResponse(200, {"code": "400", "message": "bad"})] * 3)
         with self.assertRaises(keymod.ApiKeyVerificationError):
-            keymod.verify_api_key(self.KEY, session=session, sleep=lambda s: None)
+            keymod.verify_api_key(self.KEY, session=session)
 
 
 class MainFlowTests(unittest.TestCase):
@@ -198,7 +176,7 @@ class MainFlowTests(unittest.TestCase):
         def verify(key, **kwargs):
             self.calls.append("verify")
             if verify_fails:
-                raise keymod.ApiKeyVerificationError("HTTP 400, code 10002, message invalid.credentials")
+                raise keymod.ApiKeyVerificationError("HTTP 400: invalid.credentials")
 
         def record(name, result=None):
             return lambda *a, **k: self.calls.append(name) or result
@@ -208,9 +186,8 @@ class MainFlowTests(unittest.TestCase):
             read_credentials=lambda: ("ELATEAM", "pw"), generate_api_key=record("generate", self.KEY),
             update_shared_api_key=record("save"), verify_api_key=verify,
             send_api_key_email=record("email_key"),
-            send_notice_email=lambda subject, body, password: self.notices.append((subject, body)),
-        ), patch.object(keymod.settings, "EMAIL_APP_PASSWORD", "app-password"), \
-                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            send_notice_email=lambda subject, body: self.notices.append((subject, body)),
+        ), contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             return keymod.main()
 
     def test_happy_path_runs_guard_first_then_save_then_verify_then_email(self):
