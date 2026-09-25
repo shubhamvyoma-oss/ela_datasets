@@ -71,7 +71,7 @@ flowchart TD
 
 ## 5. Extraction Process
 
-**Stage 1:** `load_config()` reads the JSON config and credentials → `run_collection()` ensures a CSV header, truncates to the last good checkpoint offset (undoing any partial write) → loops pages with rate limiting and retries (5×; 400/401/403/404 are permanent: page skipped, run exits 1) → appends each page's rows and saves the checkpoint atomically → stops when `has_more_page` is false or a page has no users.
+**Stage 1:** `load_config()` reads the JSON config and credentials → `run_collection()` ensures a CSV header, truncates to the last good checkpoint offset (undoing any partial write) → loops pages with rate limiting and retries (5×; 400/401/403/404 are permanent: page skipped, run exits 1) → appends each page's rows and saves the checkpoint atomically → stops when `has_more_page` is false or a page has no users. The date window is `start_date` → `end_date`; **`end_date` is optional and defaults to the end of today (IST)**, fixed when a fresh pull starts and saved in the checkpoint, so a resumed run reuses the same window (a different end date would shift the pages).
 
 **Stage 2:** picks the newest `Student-Export*.csv` in `input/` (or `--input`), keeps an optional leading junk title line, derives the country per row from the dial-code column, writes `<input>_with_country.csv`.
 
@@ -92,7 +92,7 @@ flowchart TD
 | Source | Key(s) | Purpose |
 |---|---|---|
 | Stage 1 CLI | `--config` (default `ip_driven_country_data_config.json`) | Points at the JSON config. |
-| Stage 1 config | `filter_key`, `sort_order`, `per_page`, `start_date`/`end_date`, `rate_limit_per_minute`, `output_csv`, `checkpoint_file` | All non-secret Stage-1 behaviour. |
+| Stage 1 config | `filter_key`, `sort_order`, `per_page`, `start_date`, `end_date` (optional, default today), `rate_limit_per_minute`, `output_csv`, `checkpoint_file` | All non-secret Stage-1 behaviour. |
 | Stage 1 credentials | `../../credentials.yaml` → `apikey`/`orgid` | Exits if missing or still the placeholder string. |
 | Stage 2 CLI | `--input`, `--output`, `--dial-code-column` (default `"Contact Number Dial Code"`), `--encoding` | File selection and column mapping. |
 | Stage 3 CLI | `--dial-input`, `--ip-input`, `--output` | Input/output file paths. |
@@ -116,7 +116,7 @@ column rename (`Derived Country (Dial Code)` → `dial_country`).
 | `Student-Export_with_country.csv` | Full read-then-write. |
 | `merged_country_data.csv` | Full read-then-write. |
 
-**Confirmed state (2026-09-25):** `input/Student-Export.csv` was replaced today (127,931 data rows). Stage 2/3 outputs on disk were built on 2026-09-24 from the previous export (131,212 rows) and are now stale. Stage 1 has run **partly**: `user_country_list.csv` has 61,722 rows and its checkpoint stands at page 124; the process is not running, so it needs a re-run to finish (it resumes). Until it finishes, `ip_driven_country` is blank for most rows and `final_country` is mostly `dial_country`.
+**Confirmed state (2026-09-25):** `input/Student-Export.csv` was replaced today (127,931 data rows). Stage 2/3 outputs on disk were built on 2026-09-24 from the previous export (131,212 rows) and are now stale. Stage 1 has **completed for the old window**: `user_country_list.csv` has 61,722 rows (checkpoint at page 124), which is exactly the API's `total_rows` for `01-01-2020` → `19-08-2026`. The same query up to today returns 65,391 users, so **3,669 newer users are missing** until Stage 1 is pulled again. The current merged file has an ip-driven country for 61,676 of its 130,188 rows; the rest fall back to `dial_country`.
 
 **Database integration:** not applicable — CSV/JSON output only.
 
@@ -140,7 +140,7 @@ with no duplicate/orphan rows, retry-with-rollback per page, required input colu
 file tolerated as zero rows.
 
 **Confirmed limitations:**
-- **Stage 1 is unfinished** (page 124, 61,722 rows) — the merge has not yet run against a complete Stage 1 file.
+- **Stage 1 is out of date, not unfinished:** its saved window ends 19 Aug 2026, so 3,669 newer users are missing. The old checkpoint has no saved end date, so the next run stops and asks for the two Stage 1 files to be deleted (a fresh pull to today takes a few minutes). A finished pull is never refreshed automatically — delete the checkpoint and CSV to re-pull.
 - `input/` holds real, unmasked student PII (names, emails, phones, addresses, parent contacts) — gitignored, must stay that way.
 - Country name formats aren't normalized between sources — `pycountry`'s official names (dial-code) vs. Edmingle's raw value (ip-driven) could disagree in formatting for the same country.
 - Contact-number join was explicitly rejected in favor of email (~29% of rows have a blank/dash contact number vs. ~0.02% blank email) — but any student with a blank/mismatched email can never match a Stage-1 record.
@@ -165,7 +165,7 @@ Stage 1 prints `[timestamp] message` to stdout (no log file); a permanently fail
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (Stage 1 only), a fresh `Student-Export*.csv` in `input/` (Stage 2), the Stage 1 date window checked. Run the stages **in order**.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (Stage 1 only), a fresh `Student-Export*.csv` in `input/` (Stage 2), `start_date` in the Stage 1 config checked (`end_date` is automatic). Run the stages **in order**.
 
 **Run it in tmux** (session name = folder name; Stage 1 is long):
 
@@ -204,7 +204,7 @@ export into `input/` before each run.
 | Stage 2: "Column '...' not found" | Dial-code column name changed in a newer export | Pass `--dial-code-column` |
 | Stage 2: "No --input given and no file matching..." | No `Student-Export*.csv` in `input/` | Drop a fresh export, or pass `--input` |
 | Stage 3: "... run dial_code_to_country.py first" | Stage 2 hasn't run, or `--dial-input` is wrong | Run Stage 2, or fix the path |
-| Stage 3's `ip_driven_country` blank for many rows | Stage 1 unfinished | Re-run Stage 1 until it completes |
+| Stage 3's `ip_driven_country` blank for many rows | The user isn't in Stage 1's list (or Stage 1 is out of date) | Delete `user_country_list.csv` + its checkpoint and re-run Stage 1 to pull up to today |
 | Stage 3 warns about duplicate emails | Same email appears twice in Stage 1's output | Investigate that user id in Stage 1's source data |
 
 ## 16. Maintenance Guide

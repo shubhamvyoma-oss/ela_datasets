@@ -94,7 +94,7 @@ validation, no field filtering, no schema validation — whatever Edmingle retur
 output schema, unchecked.
 
 **Confirmed limitations:**
-- No retry/backoff and no `try/except` at all around the network call or JSON parsing — any failure beyond a non-200 status stops the script with an unhandled exception.
+- The call now has a 120 s timeout (added 2026-09-25; before that it could hang forever), but still no retry/backoff and no `try/except` around the network call or JSON parsing — any failure beyond a non-200 status stops the script with an unhandled exception.
 - Output shape is entirely dictated by Edmingle's response that day — an upstream field change silently changes the output columns, undetected.
 - No test/demo course filtering of any kind.
 - List-valued fields aren't flattened — unusable directly from the CSV without further parsing.

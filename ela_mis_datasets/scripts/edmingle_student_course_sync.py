@@ -12,6 +12,7 @@ import logging  # structured logging to file and console
 import os  # file system operations (fsync, replace)
 import re  # regex for parsing legacy page number file
 import shutil  # disk usage check + file copy
+import socket  # server name in the STARTED email
 import sys  # exit codes and Python version info
 import time  # sleep between API calls and timing
 import uuid  # generate unique temp filenames for atomic writes
@@ -47,15 +48,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # All generated CSV/state/log/legacy files now live in output/, a sibling
 # of this script's own scripts/ folder, rather than alongside the script.
 OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
-
-
-def _load_credentials(base_dir: Path) -> dict[str, Any]:
-    # Reads the shared credentials.yaml one directory above this pipeline.
-    # Delegates the actual file read to common.load_credentials(), which
-    # raises FileNotFoundError / yaml errors as-is on a missing/malformed
-    # file -- same "never silently proceed" behavior this always had.
-    credentials_path = (base_dir / ".." / ".." / "credentials.yaml").resolve()
-    return common.load_credentials(credentials_path)
 
 
 def _load_notifications_config() -> dict[str, Any]:
@@ -253,7 +245,8 @@ def run_startup_checks(config: dict[str, Any]) -> None:
             # Key is expired or incorrect — stop now rather than 80 hours later
             msg = (
                 f"API key invalid or expired. HTTP {resp.status_code}. "
-                f"Get a fresh key from Shankar and update edmingle_sync_config.json."
+                f"Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator rotates it on the "
+                f"25th; run edmingle_generate_api_key.py by hand if it is stale)."
             )
             print(f"  FAIL — {msg}")
             send_email_alert(
@@ -405,7 +398,6 @@ class EdmingleSync:
         logger: logging.Logger | None = None,
     ) -> None:
         self.config_path = config_path.resolve()
-        self.base_dir    = self.config_path.parent
         self.config      = self._load_config()
         # Anchored to SCRIPT_DIR, not the caller's cwd, so output always lands in ela_mis_datasets/.
         self.paths = {
@@ -431,9 +423,9 @@ class EdmingleSync:
             config = json.load(handle)
         # api_key / organization_id now live in the shared credentials.yaml
         # (one directory up), not in this pipeline's own JSON config
-        creds = _load_credentials(self.base_dir)
-        config["api_key"] = creds.get("api_key", "")
-        config["organization_id"] = creds.get("organization_id", "")
+        creds = common.edmingle_settings()  # always the repo-root credentials.yaml, wherever --config points
+        config["api_key"] = creds["api_key"]
+        config["organization_id"] = creds["organization_id"]
         required = [
             "api_key", "organization_id", "overlap_pages",
             "students_per_page", "max_calls_per_minute",
@@ -567,8 +559,8 @@ class EdmingleSync:
                         f"The script stopped because the API key expired mid-run.\n\n"
                         f"Context : {context}\n"
                         f"HTTP    : {response.status_code}\n\n"
-                        f"Action  : Get a fresh API key from Shankar.\n"
-                        f"          Update edmingle_sync_config.json on the server.\n"
+                        f"Action  : Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator\n"
+                        f"          rotates it on the 25th; run edmingle_generate_api_key.py if it is stale).\n"
                         f"          Run the script again — it will resume from checkpoint."
                     )
                 raise PermanentAPIError(message)
@@ -926,9 +918,9 @@ def main() -> int:
             config = json.load(f)
         # api_key / organization_id now live in the shared credentials.yaml
         # (one directory up), not in this pipeline's own JSON config
-        creds = _load_credentials(args.config.resolve().parent)
-        config["api_key"] = creds.get("api_key", "")
-        config["organization_id"] = creds.get("organization_id", "")
+        creds = common.edmingle_settings()
+        config["api_key"] = creds["api_key"]
+        config["organization_id"] = creds["organization_id"]
 
         # Run all pre-flight checks — exits immediately if any check fails
         run_startup_checks(config)
@@ -943,7 +935,7 @@ def main() -> int:
             "[Vyoma Pipeline] STARTED — Sync has begun",
             f"The Edmingle sync script has started successfully.\n\n"
             f"Time    : {datetime.now()}\n"
-            f"Server  : 195.35.6.99\n"
+            f"Server  : {socket.gethostname()}\n"
             f"Est. time : ~{estimated_hours:.0f} hours (at {rate} calls/min, ~{_student_count:,} students)\n"
             f"You will receive a status update every "
             f"{STATUS_UPDATE_INTERVAL / 3600:.1f} hours."

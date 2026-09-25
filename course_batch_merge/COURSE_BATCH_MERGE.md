@@ -118,7 +118,7 @@ silently dropped; strict 41-column schema enforcement.
 
 **Confirmed limitations:**
 - **No pagination on the masterbatch call** — hardcoded `page=1&per_page=1000`; a status over 1,000 batches would silently lose the excess. Checked 2026-09-25: no truncation today (835 Active / 40 Archived / 12 Completed batches, all under the cap), but Active is at ~83% of it.
-- No retry/backoff on either endpoint — one transient blip fails the whole run.
+- No retry/backoff on either endpoint — one transient blip fails the whole run. Both calls have a 120 s timeout (added 2026-09-25; before that a stalled connection could hang the run forever).
 - Only `"test batch"` is filtered — no demo/dummy/sample/cbt_test/payment_test keyword filtering.
 - `tutor_id`'s real source field is explicitly unconfirmed in the code's own comment.
 - **A mid-run failure is swallowed** — `main()`'s broad `except` prints and returns, exiting 0. A cron/scheduler watching only the exit code would never see this as a failure.

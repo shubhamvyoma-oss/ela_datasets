@@ -69,7 +69,7 @@ repo consumes them programmatically.
 
 ## 7. Configuration & Parameters
 
-- **CLI:** `--config /path/to/other_config.json` (default: `edmingle_sync_config.json`).
+- **CLI:** `--config /path/to/other_config.json` (default: `edmingle_sync_config.json`). Credentials always come from the repo-root `credentials.yaml`, wherever the config file lives (before 2026-09-25 a config outside `scripts/` crashed with `FileNotFoundError`).
 - **Config file:** `overlap_pages` (3), `students_per_page` (500), `max_calls_per_minute` (30), `request_timeout_seconds` (30), `initial_retry_delay_seconds` (5), `maximum_retry_delay_seconds` (300), `rate_limit_block_seconds` (1800), and an output-filename map (all resolved against `OUTPUT_DIR` regardless of invocation cwd).
 - **`../../credentials.yaml`:** `api_key`, `organization_id` — required, missing/malformed is fatal.
 - **`notifications.yaml`:** email config + `status_update_interval_hours` (default 6h) — a missing file is a **hard failure** for this script specifically (unlike `common.load_notifications()`'s own "missing = disabled" default elsewhere).

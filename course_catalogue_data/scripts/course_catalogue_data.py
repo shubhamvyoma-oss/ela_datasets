@@ -24,10 +24,11 @@ API_KEY = _edmingle["api_key"]
 
 BASE_URL = f"{_edmingle['base_url']}/institute/{_edmingle['institute_id']}/courses/catalogue"
 HEADERS = {"apikey": API_KEY, "ORGID": _edmingle["organization_id"]}
+REQUEST_TIMEOUT_SECONDS = 120  # the catalogue takes ~15 s; never wait forever
 
 
 def fetch_courses():
-    response = requests.get(BASE_URL, headers=HEADERS, params={"org_id": ORGANIZATION_ID})
+    response = requests.get(BASE_URL, headers=HEADERS, params={"org_id": ORGANIZATION_ID}, timeout=REQUEST_TIMEOUT_SECONDS)
     print("Status:", response.status_code)
     if response.status_code != 200:
         print("Error from API:")

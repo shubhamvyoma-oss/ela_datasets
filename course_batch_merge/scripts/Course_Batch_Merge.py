@@ -41,6 +41,7 @@ OUTPUT_COLUMNS = [
 ]
 
 HEADERS = {"apikey": API_KEY, "ORGID": ORGANIZATION_ID, "Accept": "application/json"}
+REQUEST_TIMEOUT_SECONDS = 120  # each call takes seconds; never wait forever
 
 
 def log_progress(message):
@@ -49,7 +50,7 @@ def log_progress(message):
 
 def get_catalogue():
     log_progress("Fetching Course Catalogue...")
-    response = requests.get(CATALOGUE_URL, headers=HEADERS)
+    response = requests.get(CATALOGUE_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
     if response.status_code != 200:
         print("Error fetching catalogue!")
         print("Status Code:", response.status_code)
@@ -59,7 +60,7 @@ def get_catalogue():
 
 def get_batches_by_status(status_code, status_label):
     url = f"{BATCHES_URL}?status={status_code}&page=1&per_page=1000&organization_id={ORGANIZATION_ID}"
-    data = requests.get(url, headers=HEADERS).json()
+    data = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS).json()
     return [
         {
             "bundle_id": course.get("bundle_id"),

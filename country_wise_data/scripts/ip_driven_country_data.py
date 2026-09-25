@@ -142,7 +142,7 @@ def load_config(config_path: Path) -> dict:
     with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
 
-    required = ["filter_key", "start_date", "end_date"]
+    required = ["filter_key", "start_date"]  # end_date is optional: blank/absent = today
     missing = [k for k in required if k not in cfg or cfg[k] in ("", None)]
     if missing:
         sys.exit(f"Config is missing required key(s): {', '.join(missing)}")
@@ -208,6 +208,11 @@ def _retry_file_op(op_name: str, fn, *args, **kwargs):
 # Checkpoint (crash-safe, byte-offset resume)
 # --------------------------------------------------------------------------
 
+def today_end_ist() -> str:
+    """End of today (IST) in the API's date format -- the default end_date for a fresh pull."""
+    return datetime.now(IST).strftime("%d-%m-%YT23:59:59+05:30")
+
+
 def load_checkpoint(path: Path) -> dict:
     if not path.exists():
         return {"last_completed_page": 0, "csv_byte_offset": 0, "rows_written": 0}
@@ -217,7 +222,7 @@ def load_checkpoint(path: Path) -> dict:
     return data
 
 
-def save_checkpoint(path: Path, last_completed_page: int, csv_byte_offset: int, rows_written: int):
+def save_checkpoint(path: Path, last_completed_page: int, csv_byte_offset: int, rows_written: int, end_date: str):
     tmp_path = path.with_suffix(path.suffix + ".tmp")
 
     def _write_and_replace():
@@ -234,6 +239,7 @@ def save_checkpoint(path: Path, last_completed_page: int, csv_byte_offset: int, 
                 "last_completed_page": last_completed_page,
                 "csv_byte_offset": csv_byte_offset,
                 "rows_written": rows_written,
+                "end_date": end_date,  # the window this file is being pulled with; resumes reuse it
             }, f, indent=2)
         os.replace(tmp_path, path)  # atomic on POSIX and Windows
 
@@ -364,6 +370,18 @@ def run_collection(cfg: dict, script_dir: Path):
         # the header we just wrote gets wiped.
         checkpoint["csv_byte_offset"] = csv_path.stat().st_size
 
+    # The date window must stay the same across a resume (a different end date shifts the pages), so a
+    # resumed run reuses the end date saved in the checkpoint; a fresh run uses the config's, else today.
+    if checkpoint_existed:
+        end_date = checkpoint.get("end_date") or cfg.get("end_date")
+        if not end_date:
+            sys.exit(f"The checkpoint {checkpoint_path.name} has no saved end date (it was made before end_date "
+                     f"became automatic) and the config sets none.\nDelete {csv_path.name} and "
+                     f"{checkpoint_path.name} to start a fresh pull up to today (a few minutes).")
+    else:
+        end_date = cfg.get("end_date") or today_end_ist()
+    log(f"Date window: {cfg['start_date']} -> {end_date}")
+
     rate_limiter = RollingRateLimiter(cfg["rate_limit_per_minute"], window_seconds=60.0)
     session = requests.Session()
 
@@ -380,7 +398,7 @@ def run_collection(cfg: dict, script_dir: Path):
         log(f"Fetching page {page}...")
         data = fetch_page(
             session, base_url, cfg["apikey"], cfg["orgid"], cfg["filter_key"],
-            cfg["sort_order"], cfg["start_date"], cfg["end_date"],
+            cfg["sort_order"], cfg["start_date"], end_date,
             cfg["per_page"], page, rate_limiter,
         )
 
@@ -415,7 +433,7 @@ def run_collection(cfg: dict, script_dir: Path):
 
         csv_byte_offset = append_rows(csv_path, rows)
         rows_written += len(rows)
-        save_checkpoint(checkpoint_path, page, csv_byte_offset, rows_written)
+        save_checkpoint(checkpoint_path, page, csv_byte_offset, rows_written, end_date)
 
         if total_rows_seen is not None:
             remaining = max(total_rows_seen - rows_written, 0)
