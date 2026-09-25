@@ -5,20 +5,19 @@
 from __future__ import annotations
 
 # Standard library — file, system, network, data handling
-import argparse  # parse command line arguments (--config flag)
-import csv  # read and write CSV files
-import json  # read and write JSON config and state files
-import logging  # structured logging to file and console
-import os  # file system operations (fsync, replace)
-import re  # regex for parsing legacy page number file
-import shutil  # disk usage check + file copy
-import socket  # server name in the STARTED email
-import sys  # exit codes
-import time  # sleep between API calls and timing
-import uuid  # generate unique temp filenames for atomic writes
-from collections.abc import Iterable  # type hints
-from datetime import datetime  # timestamps for state and logging
-from pathlib import Path  # cross-platform file paths
+import argparse
+import csv
+import json
+import logging
+import os
+import shutil
+import socket
+import sys
+import time
+from datetime import datetime
+from collections.abc import Iterable
+from itertools import chain
+from pathlib import Path
 from typing import Any
 
 # Shared bytecode cache across every ela_datasets/ pipeline -- must be set before any local import.
@@ -45,8 +44,7 @@ from common import (
 # All output/state/log files resolve relative to this script's own folder, not the caller's cwd.
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# All generated CSV/state/log/legacy files now live in output/, a sibling
-# of this script's own scripts/ folder, rather than alongside the script.
+# All generated CSV/state/log files live in output/, a sibling of scripts/.
 OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
 
 
@@ -105,13 +103,8 @@ STUDENT_FIELDS = [
                                      # hidden from every form, confirmed via a live
                                      # API sample on 2026-09-23)
     "LastName",                     # custom field "user_last_name" (User Last Name)
-    # "UserName" removed 2026-09-23: was read from customfield_data by list
-    # POSITION (index 0), not by name -- wrong for the vast majority of
-    # students since the list's order/length varies per student (confirmed:
-    # was >99% blank/garbage). The native "user_username" column above
-    # already gives every student's actual username (100% populated),
-    # making a separate custom-field-based "UserName" column redundant even
-    # once fixed to look up by name instead of position.
+    # "UserName" was removed 2026-09-23: it was read by list position (wrong for >99% of students) and
+    # the native "user_username" column above already holds every username.
 ]
 
 # Columns saved to edmingle_course_enrollments.csv — one row per class session per student
@@ -142,17 +135,13 @@ COURSE_FIELDS = [
 ]
 
 
-# Default output file names — all saved in same folder as this script
+# Default output file names, all in output/
 DEFAULT_FILES = {
-    "student_master":        "edmingle_students.csv",                       # final student output
-    "course_master":         "edmingle_course_enrollments.csv",             # final course output
-    "state":                 "edmingle_sync_state.json",                    # checkpoint state
-    "log":                   "edmingle_sync.log",                           # run log
-    "course_progress":       "edmingle_course_enrollments.in_progress.csv", # temp during run
-    "course_snapshot":       "edmingle_course_students_snapshot.csv",       # student list snapshot
-    "legacy_student_master": "students_data_2.csv",                        # old format — auto migrated
-    "legacy_course_master":  "studentCoursesEnrolled.csv",                 # old format — auto migrated
-    "legacy_page_state":     "PageNo.txt",                                 # old page number tracker
+    "student_master":  "edmingle_students.csv",                       # final student output
+    "course_master":   "edmingle_course_enrollments.csv",             # final course output
+    "state":           "edmingle_sync_state.json",                    # checkpoint state
+    "log":             "edmingle_sync.log",                           # run log
+    "course_progress": "edmingle_course_enrollments.in_progress.csv", # temp during run
 }
 
 # Edmingle API endpoints, built from edmingle.base_url in credentials.yaml
@@ -160,18 +149,12 @@ _BASE_URL    = common.edmingle_settings()["base_url"]
 STUDENTS_URL = f"{_BASE_URL}/organization/students"
 COURSES_URL  = f"{_BASE_URL}/admin/classes/attendance"
 
+
 def send_email_alert(subject: str, body: str) -> None:
     # Delegates to common.send_mail() -- never raises, logs a warning and returns instead,
     # so email failure never crashes the pipeline.
     logger = logging.getLogger("edmingle_sync")
     common.send_mail(_notifications_config, subject, body, logger)
-
-
-# Student count used ONLY for the "estimated time" text (startup summary + STARTED email); it does not limit how many
-# students are fetched or processed. Starts as the roster file's row count (or this constant if there is no file yet),
-# and is replaced by the API's real count during the startup check below when that can be read.
-FALLBACK_STUDENT_COUNT = 122_000
-_student_count = FALLBACK_STUDENT_COUNT
 
 
 def _roster_row_count() -> int:
@@ -182,146 +165,47 @@ def _roster_row_count() -> int:
         return max(sum(1 for _ in csv.reader(handle)) - 1, 0)
 
 
-# Validates disk space + API key before starting the ~80hr run; emails and exits on failure.
-def run_startup_checks(config: dict[str, Any]) -> None:
-    global _student_count
-    _student_count = _roster_row_count() or FALLBACK_STUDENT_COUNT
-    print("=" * 55)
-    print("  VYOMA EDMINGLE SYNC — STARTUP CHECKS")
-    print("=" * 55)
+def _fail_startup(subject: str, message: str) -> None:
+    print(f"STARTUP FAILED -- {message}")
+    send_email_alert(f"[Vyoma Pipeline] STARTUP FAILED — {subject}", f"Script failed startup check.\n\n{message}")
+    sys.exit(1)
 
-    # Disk space must be at least 2 GB free
-    # Checked against SCRIPT_DIR (not cwd) since that's where the multi-GB
-    # output CSVs actually get written
-    free_bytes = shutil.disk_usage(SCRIPT_DIR).free
-    free_gb    = free_bytes / (1024 ** 3)
-    print(f"  Free disk space  : {free_gb:.1f} GB")
+
+def run_startup_checks(config: dict[str, Any]) -> int:
+    """Stop before a multi-day run if the disk is too full or the API key is bad. Returns the number of
+    students Edmingle reports (only used for the time estimate in the STARTED email); falls back to the
+    roster file's row count when it cannot be read."""
+    free_gb = shutil.disk_usage(SCRIPT_DIR).free / 1024 ** 3
     if free_gb < 2.0:
-        msg = f"Only {free_gb:.1f} GB free. Need at least 2 GB. Free up space before running."
-        print(f"  FAIL — {msg}")
-        send_email_alert(
-            "[Vyoma Pipeline] STARTUP FAILED — Not enough disk space",
-            f"Script failed startup check.\n\n{msg}"
-        )
-        sys.exit(1)
-    print("  PASS — Disk space OK")
-
-    # API key must be valid before starting the 80-hour run
-    api_key = str(config.get("api_key", ""))
-    org_id  = str(config.get("organization_id", ""))
-    print(f"  API key          : {'present' if api_key else 'MISSING'}")
-    print(f"  Organisation ID  : {org_id}")
+        _fail_startup("Not enough disk space", f"Only {free_gb:.1f} GB free. Need at least 2 GB. Free up space before running.")
+    student_count = _roster_row_count()
     try:
-        # Fetch just 1 student as a lightweight key validation test
+        # One student is enough to validate the key, and total_rows is the real student count. The endpoint
+        # counts every student, so it takes ~18 s.
         resp = requests.get(
-            STUDENTS_URL,
-            headers=common.auth_headers(api_key, org_id),
-            params={
-                "organization_id": org_id,
-                "per_page":        1,
-                "page":            1,
-            },
-            timeout=60,  # this endpoint counts every student; it has been taking >15s
+            STUDENTS_URL, headers=common.auth_headers(config["api_key"], config["organization_id"]),
+            params={"organization_id": config["organization_id"], "per_page": 1, "page": 1}, timeout=60,
         )
-        if resp.status_code == 200:
-            print("  PASS — API key is valid")
-            try:
-                _student_count = int(resp.json()["page_context"]["total_rows"])
-                print(f"  Students in Edmingle : {_student_count:,}")
-            except (ValueError, KeyError, TypeError):
-                pass  # keep the fallback estimate
-        elif resp.status_code in (400, 401, 403):
-            # Key is expired or incorrect — stop now rather than 80 hours later
-            msg = (
-                f"API key invalid or expired. HTTP {resp.status_code}. "
-                f"Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator rotates it on the "
-                f"25th; run edmingle_generate_api_key.py by hand if it is stale)."
-            )
-            print(f"  FAIL — {msg}")
-            send_email_alert(
-                "[Vyoma Pipeline] STARTUP FAILED — API key expired",
-                f"Script failed startup check.\n\n{msg}"
-            )
-            sys.exit(1)
-        else:
-            # Unexpected response — warn but do not block the run
-            print(f"  WARN — API returned HTTP {resp.status_code} — proceeding anyway")
-    except Exception as e:
-        # Network issue during check — warn but do not block the run
-        print(f"  WARN — Could not validate API key ({e}) — proceeding anyway")
-
-    # All checks passed
-    print("=" * 55)
-    print("  All startup checks passed. Starting sync...")
-    print("=" * 55)
-    print()
-
-
-# Logs rate/disk/resume-point/ETA to the log file before the pipeline starts.
-def print_startup_summary(config: dict[str, Any], state: dict[str, Any]) -> None:
-    # Read current state values
-    last_page          = state.get("last_completed_student_page", 0)
-    course_in_progress = state.get("course_refresh", {}).get("in_progress", False)
-    total_students     = state.get("course_refresh", {}).get("total_students", "unknown")
-    next_index         = state.get("course_refresh", {}).get("next_student_index", 0)
-    rate               = int(config.get("max_calls_per_minute", 30))
-    free_gb            = shutil.disk_usage(SCRIPT_DIR).free / (1024 ** 3)
-
-    logger = logging.getLogger("edmingle_sync")
-    logger.info("=" * 50)
-    logger.info("RUN SUMMARY")
-    logger.info("  Rate limit         : %d calls/min", rate)
-    logger.info("  Free disk space    : %.1f GB", free_gb)
-    logger.info("  Last student page  : %d", last_page)
-    logger.info("  Course in progress : %s", course_in_progress)
-
-    if course_in_progress:
-        # Resuming a previous run — show exact resume point
-        logger.info("  Resuming from      : student %d of %s", next_index, total_students)
-        if isinstance(total_students, int) and total_students > 0:
-            remaining = total_students - next_index
-            est_min   = remaining / rate
-            logger.info(
-                "  Est. remaining     : %d students (~%.0f min / %.1f hrs)",
-                remaining, est_min, est_min / 60
-            )
-    else:
-        # Fresh full run — estimate total duration
-        est_min = _student_count / rate
-        logger.info(
-            "  Est. total time    : ~%.0f min / %.1f hrs for full run",
-            est_min, est_min / 60
-        )
-
-    logger.info("=" * 50)
+    except requests.RequestException as error:
+        print(f"WARN: could not validate the API key ({type(error).__name__}) -- proceeding anyway")
+        return student_count
+    if resp.status_code in (400, 401, 403):
+        _fail_startup("API key expired",
+                      f"API key invalid or expired. HTTP {resp.status_code}. Check edmingle.api_key in credentials.yaml "
+                      f"(edmingle_api_key_generator rotates it on the 25th; run edmingle_generate_api_key.py by hand "
+                      f"if it is stale).")
+    if resp.status_code != 200:
+        print(f"WARN: API returned HTTP {resp.status_code} -- proceeding anyway")
+        return student_count
+    try:
+        student_count = int(resp.json()["page_context"]["total_rows"])
+    except (ValueError, KeyError, TypeError):
+        pass  # keep the roster-file estimate
+    print(f"Startup checks passed: {free_gb:.1f} GB free, {student_count:,} students in Edmingle.")
+    return student_count
 
 
 PermanentAPIError = common.PermanentAPIError  # HTTP 400/401/403/404 -- retrying will never help
-
-
-# The rest of this pipeline's generic helpers (utc_now, format_duration, atomic_write_json/csv,
-# read_csv_rows) now live in common.py -- only the legacy-migration/business-logic ones specific
-# to this pipeline remain below.
-
-def atomic_copy(source: Path, destination: Path) -> None:
-    # Copies a file atomically — used for legacy file migration
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        shutil.copyfile(source, temporary)
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def parse_legacy_page(path: Path) -> int:
-    # Reads old PageNo.txt to find where the previous script run stopped
-    if not path.exists():
-        return 1
-    match = re.search(r"\d+", path.read_text(encoding="utf-8"))
-    return max(1, int(match.group())) if match else 1
 
 
 def calculate_start_page(last_completed_page: int, overlap_pages: int) -> int:
@@ -333,14 +217,9 @@ def merge_students(
     existing_rows: Iterable[dict[str, Any]],
     fetched_rows: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    # Combines existing and newly fetched students
-    # Deduplicates by user_id — fetched rows overwrite existing for same user
+    # Deduplicates by user_id -- a fetched row overwrites an existing one for the same user
     by_user_id: dict[str, dict[str, Any]] = {}
-    for row in existing_rows:
-        user_id = str(row.get("user_id", "")).strip()
-        if user_id:
-            by_user_id[user_id] = {field: row.get(field, "") for field in STUDENT_FIELDS}
-    for row in fetched_rows:
+    for row in chain(existing_rows, fetched_rows):
         user_id = str(row.get("user_id", "")).strip()
         if user_id:
             by_user_id[user_id] = {field: row.get(field, "") for field in STUDENT_FIELDS}
@@ -442,43 +321,6 @@ class EdmingleSync:
         # Saves current progress checkpoint atomically to disk
         atomic_write_json(self.paths["state"], state)
 
-    def migrate_legacy_files(self) -> None:
-        # One-time migration from old script outputs to new format
-        # Runs silently — only triggers if legacy files exist and new ones do not
-        state_path     = self.paths["state"]
-        student_master = self.paths["student_master"]
-        course_master  = self.paths["course_master"]
-
-        # Migrate students_data_2.csv to edmingle_students.csv if needed
-        if not student_master.exists() and self.paths["legacy_student_master"].exists():
-            legacy_rows   = read_csv_rows(self.paths["legacy_student_master"])
-            migrated_rows = merge_students([], legacy_rows)
-            atomic_write_csv(student_master, STUDENT_FIELDS, migrated_rows)
-            self.logger.info(
-                "Migrated %d unique students from %s",
-                len(migrated_rows),
-                self.paths["legacy_student_master"].name,
-            )
-
-        # Migrate studentCoursesEnrolled.csv to edmingle_course_enrollments.csv if needed
-        if not course_master.exists() and self.paths["legacy_course_master"].exists():
-            atomic_copy(self.paths["legacy_course_master"], course_master)
-            self.logger.info(
-                "Migrated course enrollments from %s",
-                self.paths["legacy_course_master"].name,
-            )
-
-        # Initialise state from PageNo.txt if no state file exists
-        if not state_path.exists():
-            legacy_page = parse_legacy_page(self.paths["legacy_page_state"])
-            self.save_state({
-                "version": 1,
-                "last_completed_student_page": legacy_page,
-                "course_refresh": {"in_progress": False},
-                "migrated_at": utc_now(),
-            })
-            self.logger.info("Initialized state at student page %d", legacy_page)
-
     def request_json(
         self,
         url: str,
@@ -574,89 +416,54 @@ class EdmingleSync:
                 })
         return users
 
-    def _start_course_refresh(self, state: dict[str, Any]) -> dict[str, Any]:
-        # Initialises a fresh course enrollment run
-        # Takes a snapshot of the student list so it stays stable during the run
-        users = self._valid_course_users()
-        atomic_write_csv(self.paths["course_snapshot"], ["user_id", "name", "email"], users)
+    def _start_course_refresh(self, state: dict[str, Any], users: list[dict[str, str]]) -> dict[str, Any]:
+        # Initialises a fresh course enrollment run over `users` (the roster is not rewritten while a
+        # refresh is in progress, so a resumed run recomputes the identical list)
         atomic_write_csv(self.paths["course_progress"], COURSE_FIELDS, [])
-        output_offset = self.paths["course_progress"].stat().st_size
         state["course_refresh"] = {
             "in_progress":            True,
             "started_at":             utc_now(),
             "active_elapsed_seconds": 0.0,
             "next_student_index":     0,
-            "output_offset":          output_offset,
+            "output_offset":          self.paths["course_progress"].stat().st_size,
             "total_students":         len(users),
         }
         self.save_state(state)
         self.logger.info("Started full course refresh for %d students", len(users))
-        return state
+        return state["course_refresh"]
 
-    def _prepare_progress_for_resume(self, refresh: dict[str, Any]) -> None:
-        # Truncates in-progress file back to last safe checkpoint position
-        # Prevents duplicate rows if script was interrupted mid-write
+    def _resume_course_refresh(self, state: dict[str, Any], refresh: dict[str, Any], users: list[dict[str, str]]) -> bool:
+        # Checks an interrupted refresh is still consistent and cuts the progress file back to its last
+        # confirmed byte (no duplicate rows after a mid-write crash). Returns True if the refresh had
+        # actually finished and only its final state was lost.
         progress = self.paths["course_progress"]
-        snapshot = self.paths["course_snapshot"]
-        if not progress.exists() or not snapshot.exists():
-            raise RuntimeError(
-                "Course refresh state exists but its progress or snapshot file is missing"
-            )
+        total = int(refresh["total_students"])
+        if int(refresh["next_student_index"]) == total and not progress.exists() and self.paths["course_master"].exists():
+            state["course_refresh"] = {"in_progress": False, "completed_at": utc_now(), "total_students": total}
+            self.save_state(state)
+            self.logger.info("Recovered completed course enrollment publication")
+            return True
+        if len(users) != total:
+            raise RuntimeError(f"The roster has {len(users)} eligible students but this refresh started with {total}")
         output_offset = int(refresh["output_offset"])
-        if progress.stat().st_size < output_offset:
-            raise RuntimeError(
-                "Course progress file is shorter than its saved checkpoint offset"
-            )
-        # Truncate to last confirmed safe byte position
+        if not progress.exists() or progress.stat().st_size < output_offset:
+            raise RuntimeError("Course progress file is missing or shorter than its saved checkpoint offset")
         with progress.open("r+b") as handle:
             handle.truncate(output_offset)
             handle.flush()
             os.fsync(handle.fileno())
-
-    def _recover_completed_course_publication(
-        self, state: dict[str, Any], refresh: dict[str, Any]
-    ) -> bool:
-        # Handles edge case: run finished but crashed before state was updated
-        completed = int(refresh.get("next_student_index", 0))
-        total     = int(refresh.get("total_students", -1))
-        if (
-            completed == total
-            and total >= 0
-            and not self.paths["course_progress"].exists()
-            and self.paths["course_master"].exists()
-        ):
-            self.paths["course_snapshot"].unlink(missing_ok=True)
-            state["course_refresh"] = {
-                "in_progress":    False,
-                "completed_at":   utc_now(),
-                "total_students": total,
-            }
-            self.save_state(state)
-            self.logger.info("Recovered completed course enrollment publication")
-            return True
+        self.logger.info("Resuming course refresh at student %d of %d", int(refresh["next_student_index"]) + 1, total)
         return False
 
     def sync_courses(self, state: dict[str, Any]) -> None:
         # Main course enrollment loop — 1 API call per student
         # Saves checkpoint after each student so any crash is resumable
         refresh = state.get("course_refresh", {"in_progress": False})
+        users = self._valid_course_users()
         if not refresh.get("in_progress"):
-            # Fresh start — initialise the course refresh
-            state   = self._start_course_refresh(state)
-            refresh = state["course_refresh"]
-        else:
-            # Check if run actually already finished but state was not updated
-            if self._recover_completed_course_publication(state, refresh):
-                return
-            self.logger.info(
-                "Resuming course refresh at student %d of %d",
-                int(refresh["next_student_index"]) + 1,
-                int(refresh["total_students"]),
-            )
-
-        # Truncate progress file to last confirmed safe position
-        self._prepare_progress_for_resume(refresh)
-        users      = read_csv_rows(self.paths["course_snapshot"])
+            refresh = self._start_course_refresh(state, users)
+        elif self._resume_course_refresh(state, refresh, users):
+            return
         next_index = int(refresh["next_student_index"])
         session_started_at = time.monotonic()
 
@@ -739,7 +546,6 @@ class EdmingleSync:
 
         # Atomically rename progress file to final output filename
         os.replace(self.paths["course_progress"], self.paths["course_master"])
-        self.paths["course_snapshot"].unlink(missing_ok=True)
         state["course_refresh"] = {
             "in_progress":    False,
             "completed_at":   utc_now(),
@@ -751,11 +557,7 @@ class EdmingleSync:
     def run(self) -> None:
         # Top level orchestrator — runs student sync then course sync
         self.logger.info("Edmingle sync run started")
-        self.migrate_legacy_files()   # one-time migration if legacy files exist
         state = self.load_state()     # load checkpoint from last run
-
-        # Print run summary to log before starting
-        print_startup_summary(self.config, state)
 
         if state.get("course_refresh", {}).get("in_progress"):
             # Course refresh was interrupted — skip student sync and resume directly
@@ -822,30 +624,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        # Load config early so startup checks can read API key before sync starts
-        with args.config.open("r", encoding="utf-8") as f:
-            config = json.load(f)
-        # api_key / organization_id now live in the shared credentials.yaml
-        # (one directory up), not in this pipeline's own JSON config
-        creds = common.edmingle_settings()
-        config["api_key"] = creds["api_key"]
-        config["organization_id"] = creds["organization_id"]
-
-        # Run all pre-flight checks — exits immediately if any check fails
-        run_startup_checks(config)
-
-        # Start the full sync pipeline
         sync = EdmingleSync(args.config)
-        # Estimate total run time from the configured rate limit and the student count the startup check read from
-        # the API (the same figure print_startup_summary uses for a fresh run).
-        rate           = int(sync.config.get("max_calls_per_minute", 30))
-        estimated_hours = (_student_count / rate) / 60
+        student_count = run_startup_checks(sync.config)  # exits if the disk or the API key is bad
+        rate = int(sync.config["max_calls_per_minute"])
+        estimate = (f"~{student_count / rate / 60:.0f} hours (at {rate} calls/min, ~{student_count:,} students)"
+                    if student_count else "unknown")
         send_email_alert(
             "[Vyoma Pipeline] STARTED — Sync has begun",
             f"The Edmingle sync script has started successfully.\n\n"
             f"Time    : {datetime.now()}\n"
             f"Server  : {socket.gethostname()}\n"
-            f"Est. time : ~{estimated_hours:.0f} hours (at {rate} calls/min, ~{_student_count:,} students)\n"
+            f"Est. time : {estimate}\n"
             f"You will receive a status update every "
             f"{STATUS_UPDATE_INTERVAL / 3600:.1f} hours."
         )

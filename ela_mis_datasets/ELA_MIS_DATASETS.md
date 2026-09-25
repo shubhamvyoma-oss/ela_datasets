@@ -17,7 +17,7 @@ flowchart TD
     D -->|yes| E[sync_courses - resume directly,<br/>skip student roster sync]
     D -->|no| F["sync_students()<br/>paginate GET .../organization/students<br/>overlap-rewind + merge by user_id"]
     F --> G[Write edmingle_students.csv]
-    G --> H["sync_courses()<br/>snapshot eligible students,<br/>1 GET .../classes/attendance per student"]
+    G --> H["sync_courses()<br/>eligible students from the roster,<br/>1 GET .../classes/attendance per student"]
     E --> H
     H --> I["Append rows to<br/>edmingle_course_enrollments.in_progress.csv<br/>checkpoint after every student"]
     I --> J[os.replace to<br/>edmingle_course_enrollments.csv]
@@ -32,7 +32,7 @@ repo consumes them programmatically.
 
 | Path | Purpose |
 |---|---|
-| `scripts/edmingle_student_course_sync.py` | Entry point — startup checks, both syncs, checkpointing, logging, email, legacy migration. |
+| `scripts/edmingle_student_course_sync.py` | Entry point — startup checks, both syncs, checkpointing, logging, email. |
 | `scripts/edmingle_sync_config.json` | `overlap_pages`, `students_per_page`, `max_calls_per_minute`, retry/timeout settings, output filenames. |
 | `../notifications.yaml` | SMTP/recipient settings + `status_update_interval_hours` (this pipeline's own folder). |
 | `output/edmingle_students.csv` | Deduplicated roster (127,211 lines incl. header, last run 2026-08-24). |
@@ -40,7 +40,6 @@ repo consumes them programmatically.
 | `output/edmingle_sync_state.json` | Checkpoint: last completed student page, course-refresh progress. |
 | `output/edmingle_sync.log` | Full run log (5.1 MB as of the last completed run). |
 | `output/edmingle_course_enrollments.in_progress.csv` | Transient append target; renamed to the final CSV only once every student is processed. |
-| `output/edmingle_course_students_snapshot.csv` | Frozen eligible-student list taken at the start of a course refresh, so a concurrent roster update can't desync an in-flight pull. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `RollingRateLimiter`, atomic-write helpers, `send_mail`. |
 
 ## 4. Source System
@@ -55,7 +54,7 @@ repo consumes them programmatically.
 1. Load config, merge in credentials, run startup checks (≥2 GB free disk; a 1-row API sanity call that also reads the real student count — 400/401/403 abort, anything else warns and continues).
 2. Load the checkpoint. If a prior course refresh is in progress, the roster sync is **skipped** and the course pull resumes directly.
 3. Otherwise `sync_students()`: pages start `overlap_pages` (3) behind the last completed page (re-catching mid-run registrations); rows merge into the existing CSV by `user_id` (last write wins) and are written atomically after the last page.
-4. `sync_courses()` snapshots the eligible students (non-empty `user_id`, not `"NA"`) and makes one attendance call per student of that **frozen** snapshot, never the live roster. Rows append to an in-progress file with a checkpoint after every student; when the snapshot is done, the file is atomically renamed onto the final CSV.
+4. `sync_courses()` takes the eligible students from the roster (non-empty `user_id`, not `"NA"`) and makes one attendance call per student. The roster is not rewritten while a refresh is in progress, so a resumed run recomputes the identical list (it stops with an error if the count no longer matches the saved `total_students`). Rows append to an in-progress file with a checkpoint after every student; when every student is done, the file is atomically renamed onto the final CSV.
 5. Status emails fire at start, every status interval, on completion, and on any permanent error or crash.
 
 ## 6. Function Reference
@@ -65,7 +64,7 @@ repo consumes them programmatically.
 - **`merge_students(existing, fetched)`** — keyed by `user_id`, fetched wins; empty `user_id` dropped.
 - **`extract_student(student)`** — flattens one record into `STUDENT_FIELDS`; `PhoneNumber`/`Age`/`LastName` come from `customfield_data` **matched by name, not position** (fixed 2026-09-23, Section 14).
 - **`EdmingleSync.request_json(...)`** — a thin wrapper over `common.get_json` (the repo's one HTTP retry loop): rate-limited, endlessly retried; network/JSON/shape errors back off exponentially; `429` sleeps `rate_limit_block_seconds` (or `Retry-After`) and resets the limiter; `400/401/403/404` raise `PermanentAPIError` at once (401 emails first).
-- **`EdmingleSync.sync_students(state)` / `sync_courses(state)`** — the two phases above. `sync_courses` also has `_prepare_progress_for_resume()` (truncate to the last confirmed byte) and `_recover_completed_course_publication()` (crash after finishing but before the state file updated).
+- **`EdmingleSync.sync_students(state)` / `sync_courses(state)`** — the two phases above. `sync_courses` resumes through `_resume_course_refresh()`: it checks the roster count, truncates the progress file to the last confirmed byte, and recovers a run that finished but crashed before its state was saved.
 
 ## 7. Configuration & Parameters
 
@@ -79,11 +78,11 @@ repo consumes them programmatically.
 
 **Transformations:** custom-field name-matching (fixed 2026-09-23, see Section 14) · student
 dedup by `user_id` (last-write-wins) · Unix timestamp fields passed through unconverted · course
-row flattening (session dict + `{user_id, name, email}`) · one-time legacy-file migration.
+row flattening (session dict + `{user_id, name, email}`).
 
 **Output:** `edmingle_students.csv` — full rewrite each run, atomic write.
 `edmingle_course_enrollments.csv` — built via an append-only in-progress file, atomically renamed
-onto the final name only once the full snapshot is processed (a crash never leaves a
+onto the final name only once every student is processed (a crash never leaves a
 partially-overwritten final CSV). Both anchored to the script's own directory.
 
 **Database integration:** not applicable — CSV/JSON only.
@@ -97,7 +96,7 @@ partially-overwritten final CSV). Both anchored to the script's own directory.
 before that change) still has it — the next full sync will drop it.
 
 **Schema — `edmingle_course_enrollments.csv`:** `user_id`/`name`/`email` (from the student
-snapshot), `class_id`, `class_name`, `tutor_name`, `total_classes`, `present`, `absent`, `late`,
+roster), `class_id`, `class_name`, `tutor_name`, `total_classes`, `present`, `absent`, `late`,
 `excused`, `start_date`/`end_date` (unix ts), `master_batch_id`/`master_batch_name`,
 `classusers_start_date`/`classusers_end_date`, `batch_status`, `cu_status`, `cu_state`,
 `institution_bundle_id`, `archived_at`, `bundle_id` — all native API fields.
@@ -163,7 +162,7 @@ None — no cron/systemd/scheduler evidenced anywhere; triggered manually inside
 - **The 68–80 hour estimate is verified.** One API call per eligible student, rate-limited to 30/min: ~131,000 students ≈ 72 hours, matching the last completed run's log (`elapsed 3d 4h 43m 13s` ≈ 76.7 h).
 - Overlap-page rewind (3 pages) is safe only because the merge is last-write-wins by `user_id`.
 - The course pull is a full rebuild every run, not incremental, even though the roster sync itself is.
-- The eligible-student snapshot is frozen for the entire multi-day course pull, so a concurrent roster update can't desync it.
+- The roster is not rewritten during a course pull (the student sync is skipped while one is in progress), so the eligible-student list is the same for the whole multi-day run; a resume checks its length against the saved total.
 - Byte-offset checkpointing discards any partial/torn row a crash might leave, on resume.
 - Custom-field matching by name (not list position) was a 2026-09-23 fix — the old position-based mapping produced wrong values for over 99% of the then-127,210-row student file.
 
@@ -291,4 +290,4 @@ student. A student with no enrolled classes returns `"classes": []`.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
 
 ---
-*Initial documentation: 2026-09-24. Project/technical owner: requires confirmation.*
+*Initial documentation: 2026-09-24. Project/technical owner: shubham.*
