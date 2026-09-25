@@ -185,8 +185,25 @@ def send_email_alert(subject: str, body: str) -> None:
     common.send_mail(_notifications_config, subject, body, logger)
 
 
+# Student count used ONLY for the "estimated time" text (startup summary + STARTED email); it does not limit how many
+# students are fetched or processed. Starts as the roster file's row count (or this constant if there is no file yet),
+# and is replaced by the API's real count during the startup check below when that can be read.
+FALLBACK_STUDENT_COUNT = 122_000
+_student_count = FALLBACK_STUDENT_COUNT
+
+
+def _roster_row_count() -> int:
+    path = OUTPUT_DIR / DEFAULT_FILES["student_master"]
+    if not path.exists():
+        return 0
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        return max(sum(1 for _ in csv.reader(handle)) - 1, 0)
+
+
 # Validates disk space + API key before starting the ~80hr run; emails and exits on failure.
 def run_startup_checks(config: dict[str, Any]) -> None:
+    global _student_count
+    _student_count = _roster_row_count() or FALLBACK_STUDENT_COUNT
     print("=" * 55)
     print("  VYOMA EDMINGLE SYNC — STARTUP CHECKS")
     print("=" * 55)
@@ -223,10 +240,15 @@ def run_startup_checks(config: dict[str, Any]) -> None:
                 "per_page":        1,
                 "page":            1,
             },
-            timeout=15,
+            timeout=60,  # this endpoint counts every student; it has been taking >15s
         )
         if resp.status_code == 200:
             print("  PASS — API key is valid")
+            try:
+                _student_count = int(resp.json()["page_context"]["total_rows"])
+                print(f"  Students in Edmingle : {_student_count:,}")
+            except (ValueError, KeyError, TypeError):
+                pass  # keep the fallback estimate
         elif resp.status_code in (400, 401, 403):
             # Key is expired or incorrect — stop now rather than 80 hours later
             msg = (
@@ -283,7 +305,7 @@ def print_startup_summary(config: dict[str, Any], state: dict[str, Any]) -> None
             )
     else:
         # Fresh full run — estimate total duration
-        est_min = 122000 / rate
+        est_min = _student_count / rate
         logger.info(
             "  Est. total time    : ~%.0f min / %.1f hrs for full run",
             est_min, est_min / 60
@@ -913,17 +935,16 @@ def main() -> int:
 
         # Start the full sync pipeline
         sync = EdmingleSync(args.config)
-        # Estimate total run time from the actual configured rate limit and the
-        # approximate full-organization student count (same 122,000 assumption
-        # used in print_startup_summary for a fresh run) — not a fixed guess.
+        # Estimate total run time from the configured rate limit and the student count the startup check read from
+        # the API (the same figure print_startup_summary uses for a fresh run).
         rate           = int(sync.config.get("max_calls_per_minute", 30))
-        estimated_hours = (122000 / rate) / 60
+        estimated_hours = (_student_count / rate) / 60
         send_email_alert(
             "[Vyoma Pipeline] STARTED — Sync has begun",
             f"The Edmingle sync script has started successfully.\n\n"
             f"Time    : {datetime.now()}\n"
             f"Server  : 195.35.6.99\n"
-            f"Est. time : ~{estimated_hours:.0f} hours (at {rate} calls/min, ~122,000 students)\n"
+            f"Est. time : ~{estimated_hours:.0f} hours (at {rate} calls/min, ~{_student_count:,} students)\n"
             f"You will receive a status update every "
             f"{STATUS_UPDATE_INTERVAL / 3600:.1f} hours."
         )
