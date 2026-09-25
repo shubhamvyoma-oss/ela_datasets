@@ -13,7 +13,7 @@ import os  # file system operations (fsync, replace)
 import re  # regex for parsing legacy page number file
 import shutil  # disk usage check + file copy
 import socket  # server name in the STARTED email
-import sys  # exit codes and Python version info
+import sys  # exit codes
 import time  # sleep between API calls and timing
 import uuid  # generate unique temp filenames for atomic writes
 from collections.abc import Iterable  # type hints
@@ -51,12 +51,8 @@ OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
 
 
 def _load_notifications_config() -> dict[str, Any]:
-    # Reads this pipeline's notifications config from the repo-wide
-    # own folder (a sibling of scripts/). A missing file was always a hard failure here (previously an
-    # unhandled FileNotFoundError from open()) -- preserved explicitly, since
-    # common.load_notifications() on its own treats a missing file as
-    # "notifications disabled" (returns {}), which is not this script's
-    # existing behavior.
+    # Reads ela_mis_datasets/notifications.yaml. A missing file is a hard failure for this script
+    # (common.load_notifications() alone would treat it as "notifications disabled").
     notifications_path = common.REPO_ROOT / "ela_mis_datasets" / "notifications.yaml"
     if not notifications_path.exists():
         raise FileNotFoundError(f"Notifications file not found: {notifications_path}")
@@ -217,7 +213,7 @@ def run_startup_checks(config: dict[str, Any]) -> None:
         sys.exit(1)
     print("  PASS — Disk space OK")
 
-    # Check 3 — API key must be valid before starting 80-hour run
+    # API key must be valid before starting the 80-hour run
     api_key = str(config.get("api_key", ""))
     org_id  = str(config.get("organization_id", ""))
     print(f"  API key          : {'present' if api_key else 'MISSING'}")

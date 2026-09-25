@@ -188,7 +188,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config(SCRIPT_DIR)
-    apikey = args.apikey or config.get("api_key") or config.get("apikey")
+    apikey = args.apikey or config.get("api_key")
     org_id = require_config(config, "org_id")
 
     output_folder = resolve_output_folder(config, Path(__file__))

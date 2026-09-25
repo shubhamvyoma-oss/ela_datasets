@@ -2,8 +2,8 @@
 edmingle_api.py -- fetches a single (chunk, page) from Edmingle's enrollment report endpoint.
 Permanent errors (400/401/403/404) raise immediately, no retry; a 429 triggers a long cool-down
 (bigger than normal backoff) plus a rate-limiter reset; everything else transient retries forever
-with capped exponential backoff -- the external watchdog is the safety net for a stuck process,
-not a retry counter in here.
+with capped exponential backoff -- there is deliberately no retry counter (a permanent error stops the
+run with an email, and the checkpoint makes a restart cheap).
 """
 
 import json

@@ -1,10 +1,8 @@
 """
 pipeline_common.py -- shared helpers for this pipeline's 4 network-calling scripts: config
-loading, HTTP 429 backoff parsing, output-folder resolution, rate-limit spacing, per-run file
-logging, and the end-of-run email report. Credentials/notifications file reading and SMTP
-mechanics delegate to ela_datasets/common.py; config.yaml was removed 2026-09-23 (see
-../SESSION_WISE_ATTENDANCE.md) since every key it held was either unread or already had a safe
-inline default.
+loading (credentials.yaml + this pipeline's notifications.yaml), HTTP 429 backoff parsing,
+output-folder resolution, rate-limit spacing, per-run file logging, and the end-of-run email
+report. Credential/notification reading and SMTP sending delegate to ela_datasets/common.py.
 
 USAGE
     from pipeline_common import (
@@ -41,10 +39,8 @@ def require_config(config: dict, key: str):
 
 
 def load_config(script_dir: Path) -> dict:
-    """Merges the shared Edmingle credentials (../../credentials.yaml) and
-    this pipeline's own notification config (../../notifications/
-    session_wise_attendance.yaml) onto a fresh config dict -- see module
-    docstring for why there's no config.yaml read here anymore."""
+    """Builds the config dict from the shared ../../credentials.yaml and this pipeline's own
+    ../notifications.yaml. This pipeline has no config.yaml."""
     config: dict = {}
     _merge_credentials(config, script_dir)
     _merge_notifications(config)
@@ -52,23 +48,9 @@ def load_config(script_dir: Path) -> dict:
 
 
 def _merge_credentials(config: dict, script_dir: Path) -> None:
-    """Merges api_key/org_id/orgid/institute_id from the shared
-    ../../credentials.yaml onto config, in the same keys the 5 scripts already
-    read via config.get("api_key")/config.get("org_id", ...)/etc. org_id
-    and orgid are kept as two separate keys (some endpoints expect the
-    uppercase param name) but both are sourced from the same
-    edmingle.organization_id value. The actual file read delegates to
-    common.load_credentials(); the fail-soft existence check below (warn +
-    return instead of raising) is kept as before -- every script here still
-    falls back to --apikey when this is missing.
-    script_dir -> session_wise_attendance/ -> ela_datasets/, hence two
-    ".parent" steps (script_dir is already the scripts/ folder, not a file
-    inside it, so this needs one fewer ".parent" than climbing from a
-    config.yaml file path used to)."""
+    """Copies api_key, org_id/orgid (the same organization_id under the two spellings the scripts
+    use), institute_id and base_url from ../../credentials.yaml onto config."""
     credentials_path = script_dir.resolve().parent.parent / "credentials.yaml"
-    if not credentials_path.exists():
-        print(f"[WARN] {credentials_path} not found — pass --apikey explicitly.")
-        return
     edmingle = common.load_credentials(credentials_path)
 
     if "api_key" in edmingle:
@@ -83,15 +65,9 @@ def _merge_credentials(config: dict, script_dir: Path) -> None:
 
 
 def _merge_notifications(config: dict) -> None:
-    """Merges this pipeline's notifications config (email SMTP settings +
-    recipients) onto config["smtp"], in the exact shape send_run_report()
-    already expects (host/port/username/app_password/from_address/
-    use_tls/to_addresses in one flat dict). Lives in the repo-wide
-    own folder (a sibling of scripts/). The raw dict (common.load_notifications() already returns {} if
-    the file is missing, matching the old "missing file = notifications
-    disabled" behavior) is also stashed on config["_notifications"] so
-    send_run_report() can hand it straight to common.send_mail() without
-    re-reading the file."""
+    """Puts this pipeline's SMTP settings and recipients (from its own notifications.yaml) onto
+    config["smtp"] in the flat shape send_run_report() checks, and keeps the raw notifications dict on
+    config["_notifications"] for common.send_mail(). A missing file means notifications are off."""
     notifications = common.load_notifications("session_wise_attendance")
     config["_notifications"] = notifications
 
@@ -116,7 +92,7 @@ def parse_retry_after_seconds(response_text: str, default_seconds: int = DEFAULT
 
 def resolve_output_folder(config: dict, script_path: Path) -> Path:
     """Resolves config's output_folder relative to the SCRIPT's own location
-    (not the process cwd — matters when launched via Task Scheduler), creates it.
+    (not the process cwd — matters under cron), creates it.
     Scripts live in this pipeline's scripts/ subfolder now (one level below
     the pipeline root), so a relative output_folder is resolved against
     <script's folder>/../output -- the pipeline's output/ subfolder -- not
@@ -237,17 +213,14 @@ class _PrintLogger:
 
 
 def send_run_report(stage_name: str, summary: dict, config: dict):
-    """Emails a plaintext run summary using config.yaml's smtp: block.
-    Best-effort only: a missing/placeholder SMTP config must never crash
-    the pipeline. What triggers a report (an smtp config with at least one
-    to_address, merged from notifications.yaml by _merge_notifications) and
-    the subject/body content are unchanged; the actual SMTP connect-and-send
-    now delegates to common.send_mail(), which is itself best-effort and
-    never raises."""
+    """Emails a plaintext run summary. Best-effort: a missing/placeholder SMTP config never crashes
+    the pipeline. A report is sent when the config has an smtp block with at least one recipient
+    (merged from notifications.yaml by _merge_notifications); sending goes through
+    common.send_mail(), which never raises."""
     smtp_cfg = config.get("smtp") or {}
     to_addresses = smtp_cfg.get("to_addresses") or []
     if not smtp_cfg or not to_addresses:
-        print(f"[WARN] Email report skipped for {stage_name}: no smtp config / to_addresses in config.yaml")
+        print(f"[WARN] Email report skipped for {stage_name}: no smtp config / to_addresses in notifications.yaml")
         return
 
     lines = [f"Vyoma attendance pipeline - {stage_name} run report", ""]

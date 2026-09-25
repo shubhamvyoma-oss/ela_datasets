@@ -26,11 +26,10 @@ Writes a CSV with one row per session, plus a summary printed to stdout.
 
 INTEGRATION NOTE
 -----------------
-This is deliberately standalone (does not import build_course_catalog.py)
-so you can run it independently first and eyeball the output. It also
-supplies fetch_org_attendances/sessions_to_dataframe to
-build_session_attendance.py (Stage 3's bulk pull), so the two scripts can't
-drift on session-shaping/status-classification logic.
+This is deliberately standalone (does not import build_course_catalog.py), so it can be run on
+its own to eyeball one class's sessions. It also supplies fetch_org_attendances/sessions_to_dataframe
+to build_session_attendance.py (Stage 3's bulk pull), so the two scripts can't drift on
+session-shaping/status-classification logic.
 """
 
 import argparse
@@ -272,47 +271,6 @@ def sessions_to_dataframe(classes: list) -> pd.DataFrame:
     return df
 
 
-def cross_validate_against_report55(org_att_df: pd.DataFrame,
-                                     report55_df: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Merges org-attendances session totals against your existing report_type=55
-    aggregated per-session P/A/- counts.
-
-    report55_df is expected to have (at minimum) these columns, matching your
-    existing pipeline's output before it collapses to summary stats:
-        - attendance_id  (your confirmed correct session identifier)
-        - present_count  (count of studentAttendanceStatus == "P")
-        - absent_count   (count of studentAttendanceStatus == "A")
-        - not_marked_count (count of studentAttendanceStatus == "-")
-        - total_marked   (present_count + absent_count + not_marked_count)
-
-    If you don't have this shaped yet, this function just returns the
-    org_att_df with a placeholder — wire in your actual report_type=55
-    session-level dataframe and re-run.
-    """
-    if report55_df is None:
-        print("[INFO] No report_type=55 dataframe passed — skipping merge, "
-              "returning org_attendances data only.")
-        org_att_df["report55_present"] = pd.NA
-        org_att_df["present_diff"] = pd.NA
-        return org_att_df
-
-    merged = org_att_df.merge(
-        report55_df[["attendance_id", "present_count", "total_marked"]],
-        left_on="session_id",
-        right_on="attendance_id",
-        how="left",
-        suffixes=("", "_r55"),
-    )
-    merged["present_diff"] = merged["present"] - merged["present_count"]
-    merged["total_diff"] = merged["total_enrolled_at_session"] - merged["total_marked"]
-
-    mismatches = merged[merged["present_diff"].abs() > 0]
-    print(f"[SUMMARY] {len(merged)} sessions compared, {len(mismatches)} with "
-          f"present-count mismatch between /organization/attendances and report_type=55")
-    return merged
-
-
 def main():
     parser = argparse.ArgumentParser(description="Cross-validate attendance sources")
     parser.add_argument("--class_id", type=int, default=None,
@@ -326,7 +284,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config(SCRIPT_DIR)
-    apikey = args.apikey or config.get("api_key") or config.get("apikey")
+    apikey = args.apikey or config.get("api_key")
     org_id = require_config(config, "org_id")
     out_filename = args.out or "attendance_spotcheck.csv"
 

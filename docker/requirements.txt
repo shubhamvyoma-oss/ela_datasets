@@ -1,5 +1,5 @@
-pandas
-requests
-PyYAML
-phonenumbers
-pycountry
+pandas==3.0.6
+requests==2.34.2
+PyYAML==6.0.3
+phonenumbers==9.0.40
+pycountry==26.2.16

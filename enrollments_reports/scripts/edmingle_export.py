@@ -40,8 +40,7 @@ from common import RollingRateLimiter, atomic_write_json
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Was edmingle_config.json (removed -- its only real content was ever "{}"); these are now the
-# single source of truth. No CLI flag for these -- override at the call site if ever needed.
+# Defaults for every run (there is no config file); no CLI flag -- override at the call site if ever needed.
 DEFAULTS = {
     "chunk_days": 30,
     "per_page": 200,

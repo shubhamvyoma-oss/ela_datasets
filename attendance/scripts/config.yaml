@@ -2,15 +2,12 @@
 # config.yaml  —  Edmingle Attendance Pipeline
 # =============================================================
 #
-# NOTE: Edmingle API credentials (api_key / organization_id) now
-# live in the shared ../credentials.yaml (one per ela_datasets/
-# install, used by every pipeline). Email/SMTP settings now live
-# in notifications.yaml (per-pipeline, not shared). This file
-# still contains request/path/behaviour settings -- keep it out
-# of version control regardless.
+# Edmingle credentials, organization id and base URL live in the shared ../../credentials.yaml;
+# email/SMTP settings live in ../notifications.yaml (this pipeline's own folder). This file holds
+# only request, path and behaviour settings.
 #
-# USAGE: Pass path explicitly if not in the same folder as the
-# script: python master_attendance_pipeline.py --config /path/to/config.yaml
+# USAGE: attendance.py reads config.yaml from the current folder by default (run it from scripts/);
+# pass another file with:  python3 attendance.py --config /path/to/config.yaml
 # =============================================================
 
 
@@ -22,8 +19,7 @@ api:
   # Request timeout. Edmingle can be slow on large date windows.
   timeout_seconds: 60
 
-  # Sleep between day calls to stay under the 25 req/min hard limit.
-  # 2.5s = 24 req/min  — a safe margin below the ceiling.
+  # Sleep between day calls: 2.5 s = 24 requests/min, below Edmingle's ~30/min limit.
   rate_limit_sleep_seconds: 2.5
 
   # Retry settings for transient failures (429, 5xx, timeouts, drops).
@@ -44,12 +40,8 @@ api:
 
 
 # ── FILE PATHS ───────────────────────────────────────────────
-# All paths below are relative to THIS SCRIPT'S OWN FOLDER (attendance/),
-# not the current working directory the script happens to be invoked
-# from. attendance.py resolves any relative value here against
-# Path(__file__).resolve().parent before use, so output always lands
-# next to attendance.py regardless of how/where it's launched from
-# (cron, Task Scheduler, a wrapper .bat that cd's elsewhere, etc).
+# Relative paths below are resolved against THIS SCRIPT'S FOLDER (attendance/scripts/), not the
+# current working directory, so output lands in attendance/output/ however it is launched (cron, etc.).
 # An absolute path is still honoured as-is (e.g. to point at a
 # dedicated data drive).
 paths:

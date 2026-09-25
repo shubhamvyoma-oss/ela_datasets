@@ -60,7 +60,7 @@ repo consumes them programmatically.
 
 ## 6. Function Reference
 
-- **`run_startup_checks(config)`** — ≥2 GB free disk plus a 1-row API call (400/401/403 fatal, else warns) and reads the real student count for the time estimate. Its header comment claims 3 checks including the Python version; only 2 exist (comment/code mismatch, harmless).
+- **`run_startup_checks(config)`** — ≥2 GB free disk plus a 1-row API call (400/401/403 fatal, else warns) and reads the real student count for the time estimate.
 - **`calculate_start_page(last, overlap)`** — `max(1, last - overlap)`.
 - **`merge_students(existing, fetched)`** — keyed by `user_id`, fetched wins; empty `user_id` dropped.
 - **`extract_student(student)`** — flattens one record into `STUDENT_FIELDS`; `PhoneNumber`/`Age`/`LastName` come from `customfield_data` **matched by name, not position** (fixed 2026-09-23, Section 14).
@@ -109,7 +109,6 @@ snapshot), `class_id`, `class_name`, `tutor_name`, `total_classes`, `present`, `
 validation before trusting a page, byte-offset truncation on resume.
 
 **Confirmed limitations:**
-- `run_startup_checks()` claims 3 checks in its own comment (incl. Python version), implements only 2.
 - Every student row written **before 2026-09-23** carries wrong/blank `Age`/`PhoneNumber`/`LastName` from the old position-based bug — self-corrects only when that student's page is next re-fetched, which the overlap window doesn't guarantee for older pages.
 - The live roster file still has a legacy `UserName` column the current code no longer produces — will silently disappear on the next full write.
 - Course/enrollment is a full rebuild every run (not incremental) — inherent to the one-call-per-student design; no batch/bulk attendance endpoint exists to use instead.

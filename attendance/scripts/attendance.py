@@ -199,8 +199,8 @@ def load_config(config_path: str) -> dict:
     if not str(cfg["api"].get("org_id", "")).strip():
         sys.exit(f"\nMissing edmingle.organization_id in shared credentials file: {creds_path}\n")
 
-    # Anchor relative paths to this script's folder, not the caller's cwd (matters when launched
-    # from cron/Task Scheduler/a wrapper that cd's elsewhere). Absolute paths are left untouched.
+    # Anchor relative paths to this script's folder, not the caller's cwd (matters under cron).
+    # Absolute paths are left untouched.
     for _key in ("output_folder", "log_folder", "staging_folder",
                  "checkpoint_file", "lock_file"):
         _val = cfg["paths"].get(_key)

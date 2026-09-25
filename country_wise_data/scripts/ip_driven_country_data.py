@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-edmingle_user_country_list_export.py
+ip_driven_country_data.py
 
 Pulls the full per-user list from Edmingle's /user/useranalyticslist
 endpoint, paginated, capturing user_id + name/email + country (filterValue)
 + region + activity metrics per row. Unlike the earlier
 useractivityadditionalstats collector, THIS endpoint returns user-level
-rows with an _id you can join straight onto your enrollment file.
+rows with an _id that joins straight onto the enrollment data.
 
 TIMESTAMPS: last_seen and created_at are written both as raw epoch
 (last_seen_epoch, created_at_epoch -- for machine use / re-processing)
@@ -35,9 +35,8 @@ to the last known-good checkpoint offset before resuming, guaranteeing
 no duplicate or orphaned rows either way.
 
 USAGE
-  1. Copy ip_driven_country_data_config.example.json ->
-     ip_driven_country_data_config.json and fill in the non-credential
-     settings (base_url, filter_key, dates, etc).
+  1. Check ip_driven_country_data_config.json (filter_key, start_date, optional end_date --
+     default is the end of today; the base URL comes from credentials.yaml).
   2. Run:
         python ip_driven_country_data.py --config ip_driven_country_data_config.json
   3. Safe to Ctrl+C / let a 429 penalty hit -- just re-run the same command.
@@ -81,11 +80,6 @@ try:
     import requests
 except ImportError:
     sys.exit("Missing dependency: pip install requests")
-
-try:
-    import yaml
-except ImportError:
-    sys.exit("Missing dependency: pip install pyyaml")
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -136,8 +130,7 @@ def load_config(config_path: Path) -> dict:
     if not config_path.exists():
         sys.exit(
             f"Config file not found: {config_path}\n"
-            f"Copy ip_driven_country_data_config.example.json to "
-            f"{config_path.name} and fill in your settings first."
+            f"Expected {config_path.name} next to this script, or pass --config."
         )
     with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
@@ -158,7 +151,7 @@ def load_config(config_path: Path) -> dict:
     cfg["orgid"] = edmingle_creds.get("organization_id")
     cfg["base_url"] = common.edmingle_settings(path=CREDENTIALS_PATH)["base_url"]
 
-    if not cfg["apikey"] or cfg["apikey"] == "PASTE_YOUR_APIKEY_HERE":
+    if not cfg["apikey"]:
         sys.exit(
             f"No valid Edmingle api_key found in {CREDENTIALS_PATH} -- "
             f"edit that shared credentials file first."
@@ -184,8 +177,7 @@ FILE_IO_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
 
 def _retry_file_op(op_name: str, fn, *args, **kwargs):
     """Retry a file-system operation on transient OSError/PermissionError
-    (e.g. Windows Defender or OneDrive briefly locking a just-created
-    file). This is a transient environment issue, not a logic bug --
+    (e.g. a brief file lock). This is a transient environment issue, not a logic bug --
     treated the same way as a transient API error: short exponential
     backoff, then give up loudly rather than silently losing data."""
     attempt = 0
@@ -199,8 +191,7 @@ def _retry_file_op(op_name: str, fn, *args, **kwargs):
                 raise
             delay = FILE_IO_RETRY_BASE_DELAY * (2 ** (attempt - 1))
             log(f"{op_name} hit a transient file error (attempt {attempt}): {e} "
-                f"-- retrying in {delay:.1f}s (likely antivirus/OneDrive briefly "
-                f"locking the file, not a real problem)")
+                f"-- retrying in {delay:.1f}s")
             time.sleep(delay)
 
 
@@ -226,9 +217,7 @@ def save_checkpoint(path: Path, last_completed_page: int, csv_byte_offset: int, 
     tmp_path = path.with_suffix(path.suffix + ".tmp")
 
     def _write_and_replace():
-        # Clean up a stale .tmp left over from a prior interrupted attempt
-        # before writing a fresh one -- avoids a second-layer permission
-        # trap on Windows where the old tmp file itself is locked.
+        # Remove a stale .tmp left by an interrupted attempt before writing a fresh one.
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
@@ -241,7 +230,7 @@ def save_checkpoint(path: Path, last_completed_page: int, csv_byte_offset: int, 
                 "rows_written": rows_written,
                 "end_date": end_date,  # the window this file is being pulled with; resumes reuse it
             }, f, indent=2)
-        os.replace(tmp_path, path)  # atomic on POSIX and Windows
+        os.replace(tmp_path, path)  # atomic
 
     _retry_file_op("save_checkpoint", _write_and_replace)
 

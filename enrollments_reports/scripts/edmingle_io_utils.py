@@ -1,12 +1,9 @@
 """
 edmingle_io_utils.py
 
-truncate_to_offset() is genuine to this pipeline (used on resume to cut a
-CSV back to the last checkpointed byte offset). utc_now, format_duration,
-atomic_write_json, atomic_write_csv and read_csv_rows used to be defined
-here too -- they were byte-for-byte identical to the copies in
-edmingle_student_course_sync.py, so they now live in common.py and are
-re-exported here for backward compatibility with existing imports.
+truncate_to_offset() is genuine to this pipeline (used on resume to cut a CSV back to the last
+checkpointed byte offset). format_duration and atomic_write_json live in common.py and are
+re-exported here for the modules that import them from this file.
 """
 
 import os
@@ -14,13 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from common import (  # noqa: F401 -- re-exported for existing imports
-    atomic_write_csv,
-    atomic_write_json,
-    format_duration,
-    read_csv_rows,
-    utc_now,
-)
+from common import atomic_write_json, format_duration  # noqa: F401 -- re-exported
 
 
 def truncate_to_offset(path: Path, offset: int) -> None:

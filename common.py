@@ -57,7 +57,10 @@ def edmingle_settings(need_institute: bool = False, path: str | Path | None = No
     api_key, organization_id (str), institute_id (str), base_url (no trailing slash).
     Exits with a clear message if base_url or organization_id (and institute_id, when
     need_institute) is missing -- there are deliberately no built-in fallback ids or URLs."""
-    creds = load_credentials(path)
+    try:
+        creds = load_credentials(path)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"credentials.yaml not found: {exc.filename}") from exc
     needed = ["base_url", "organization_id"] + (["institute_id"] if need_institute else [])
     missing = [k for k in needed if not creds.get(k)]
     if missing:

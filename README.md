@@ -71,7 +71,7 @@ ela_datasets/
 - **`credentials.yaml`** (repo root, gitignored) — the one Edmingle API key/org id/institute
   id/tutor login every pipeline reads. Only `edmingle_api_key_generator` writes to it.
 - **`common.py`** (repo root) — `edmingle_settings()` (the one place the API key, organization id, institute id and base URL are read, from `credentials.yaml`; nothing is hardcoded in scripts), `auth_headers()` (the key always goes in headers, never in a URL), plus shared notification loading, SMTP sending, a rolling-window rate limiter and crash-safe atomic writes (replacing 3–7 near-identical copies of each). Entry-point scripts import it with `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` + `import common`, after setting `sys.pycache_prefix`.
-- **`.pycache/`** and **`.venv/`** (repo root, gitignored) — shared bytecode cache and virtual environment.
+- **`.pycache/`** and **`.venv/`** (repo root, gitignored) — shared bytecode cache and virtual environment. `docker/requirements.txt` pins the same package versions as the venv.
 
 `attendance.py` and `session_wise_attendance/pipeline_common.py` deliberately keep their own rate-limiter/email mechanics (an HTML email format; a flat delay instead of a rolling window) — forcing them onto `common.py` would change how they pace requests.
 
