@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
 """
 edmingle_export.py -- pulls row-level enrollment data from Edmingle's /reports/enrollment endpoint
-(report_details_type=3) for a date range, in <=chunk_days windows (Edmingle blocks large
-single-shot ranges), and writes it to CSV. Resumable via byte-offset checkpointing -- see
-../ENROLLMENTS_REPORTS.md for full design rationale and known issues.
+(report_details_type=3) for a date range, in <=chunk_days windows (Edmingle blocks large single-shot
+ranges), and writes it to one CSV. Each window is downloaded to its own file in
+<output>.chunks/ and renamed when complete, so an interrupted run resumes by skipping the finished
+windows (at most one window is re-downloaded). When every window is done they are joined into the
+final CSV and the chunk files are deleted. See ../ENROLLMENTS_REPORTS.md for the design and known issues.
 
 Usage:
     python3 edmingle_export.py --start-date 01-01-2010 --end-date 06-08-2026
 
     (--output is optional; if omitted, output goes to the fixed filename
-    output/edmingle_enrollment_report.csv, overwritten on every run --
+    output/edmingle_enrollment_report.csv, replaced on every completed run --
     pass --output explicitly if you need to keep a specific run's file.)
 """
 
 import argparse
 import csv
-import json
+import io
 import logging
 import os
+import shutil
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -31,12 +35,10 @@ sys.pycache_prefix = os.path.normpath(
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from edmingle_api import PermanentAPIError, fetch_page
-from edmingle_chunker import load_or_create_chunk_plan
-from edmingle_constants import FIELDS
-from edmingle_io_utils import format_duration, truncate_to_offset
+from edmingle_constants import DATE_FMT, FIELDS
 
 import common
-from common import RollingRateLimiter, atomic_write_json
+from common import RollingRateLimiter, format_duration
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -58,24 +60,7 @@ def send_mail(subject: str, body: str, logger: logging.Logger) -> None:
     common.send_mail(notifications, subject, body, logger)
 
 
-def load_checkpoint(path: Path) -> dict | None:
-    """Was edmingle_checkpoint.py -- inlined, it was two functions wrapping
-    a single atomic_write_json call."""
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def save_checkpoint(path: Path, data: dict) -> None:
-    atomic_write_json(path, data)
-
-
 def setup_logging(log_path: Path) -> logging.Logger:
-    """Was edmingle_logger.py -- inlined; logging.basicConfig covers what
-    the hand-rolled handler setup did."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -86,10 +71,25 @@ def setup_logging(log_path: Path) -> logging.Logger:
     return logging.getLogger("edmingle_export")
 
 
-def build_default_output_name(start_date: str, end_date: str) -> str:
-    # Fixed filename (bounds disk usage) -- _resolve_resume_state's own checkpoint fields already
-    # detect a differently-ranged run and correctly start fresh/overwrite.
-    return "edmingle_enrollment_report.csv"
+def build_chunks(start_date: str, end_date: str, chunk_days: int) -> list[tuple[str, str]]:
+    """Split [start_date, end_date] (DD-MM-YYYY, inclusive) into windows of at most chunk_days days each,
+    as (start, end) strings in the DD-MM-YYYY format the API expects."""
+    start = datetime.strptime(start_date, DATE_FMT)
+    end = datetime.strptime(end_date, DATE_FMT)
+    if start > end:
+        sys.exit("--start-date must not be after --end-date.")
+    chunks = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + timedelta(days=chunk_days - 1), end)
+        chunks.append((cur.strftime(DATE_FMT), chunk_end.strftime(DATE_FMT)))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def count_rows(path: Path) -> int:
+    with path.open(newline="", encoding="utf-8") as fh:
+        return sum(1 for _ in csv.reader(fh))
 
 
 class EdmingleExportRun:
@@ -103,199 +103,117 @@ class EdmingleExportRun:
         session: requests.Session | None = None,
         logger=None,
     ) -> None:
-        credentials_path = SCRIPT_DIR.parent.parent / "credentials.yaml"
-        if not credentials_path.exists():
-            sys.exit(f"Shared credentials file not found: {credentials_path}")
-        edmingle_cfg = common.load_credentials(credentials_path)
-        required = ["api_key", "organization_id"]
-        missing = [key for key in required if not edmingle_cfg.get(key)]
-        if missing:
-            sys.exit(
-                f"Credentials file {credentials_path} is missing required "
-                f"edmingle keys: {', '.join(missing)}"
-            )
+        creds = common.edmingle_settings()
         self.config = dict(DEFAULTS)
-        self.config["api_key"] = edmingle_cfg["api_key"]
-        self.config["organization_id"] = edmingle_cfg["organization_id"]
         self.start_date = start_date
         self.end_date = end_date
-        self.api_key = api_key or self.config["api_key"]
-        self.org_id = org_id or self.config["organization_id"]
+        self.api_key = api_key or creds["api_key"]
+        self.org_id = org_id or creds["organization_id"]
 
-        self.output_path = Path(output) if output else SCRIPT_DIR.parent / "output" / build_default_output_name(
-            start_date, end_date)
+        self.output_path = Path(output) if output else SCRIPT_DIR.parent / "output" / "edmingle_enrollment_report.csv"
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path = self.output_path.with_suffix(self.output_path.suffix + ".checkpoint.json")
-        self.chunk_plan_path = self.output_path.with_suffix(self.output_path.suffix + ".chunks.json")
+        self.chunk_dir = self.output_path.with_suffix(".chunks")
         self.log_path = self.output_path.with_suffix(".log")
 
         self.logger = logger or setup_logging(self.log_path)
         self.session = session or requests.Session()
-        self.rate_limiter = RollingRateLimiter(
-            int(self.config["max_calls_per_minute"]), 60.0, self.logger,
-        )
+        self.rate_limiter = RollingRateLimiter(int(self.config["max_calls_per_minute"]), 60.0, self.logger)
 
-    def _checkpoint_dict(self, chunk_index, last_page_completed, total_written,
-                          output_offset, completed) -> dict:
-        return {
-            "start_date": self.start_date,
-            "end_date": self.end_date,
-            "chunk_days": self.config["chunk_days"],
-            "per_page": self.config["per_page"],
-            "chunk_index": chunk_index,
-            "last_page_completed": last_page_completed,
-            "total_written": total_written,
-            "output_offset": output_offset,
-            "completed": completed,
-        }
+    def _chunk_path(self, chunk_start: str, chunk_end: str) -> Path:
+        return self.chunk_dir / f"{chunk_start}_{chunk_end}.csv"
 
-    def _resolve_resume_state(self, checkpoint, num_chunks):
-        """Returns (is_resume, start_chunk_idx, start_page, total_written,
-        output_offset), or None if the checkpoint shows this exact run
-        already completed."""
-        if not checkpoint:
-            return False, 0, 1, 0, None
-
-        same_params = (
-            checkpoint.get("start_date") == self.start_date
-            and checkpoint.get("end_date") == self.end_date
-            and checkpoint.get("chunk_days") == self.config["chunk_days"]
-            and checkpoint.get("per_page") == self.config["per_page"]
-        )
-        if same_params and not checkpoint.get("completed"):
-            start_chunk_idx = checkpoint.get("chunk_index", 0)
-            start_page = checkpoint.get("last_page_completed", 0) + 1
-            total_written = checkpoint.get("total_written", 0)
-            output_offset = checkpoint.get("output_offset")
-            self.logger.info(f"Resuming from checkpoint: chunk {start_chunk_idx + 1}/{num_chunks}, "
-                              f"page {start_page}, {total_written:,} rows already written.")
-            return True, start_chunk_idx, start_page, total_written, output_offset
-
-        if checkpoint.get("completed"):
-            self.logger.info("Checkpoint shows this exact run already completed. "
-                              "Delete the .checkpoint.json file to force a re-run.")
-            return None
-
-        self.logger.warning("Checkpoint found but parameters differ from this run; starting fresh "
-                             "(existing output file will be overwritten).")
-        return False, 0, 1, 0, None
+    def _download_chunk(self, chunk_start: str, chunk_end: str, label: str) -> int:
+        """Fetch every page of one window into a .part file, then rename it to the chunk file.
+        Returns the number of rows."""
+        path = self._chunk_path(chunk_start, chunk_end)
+        part = path.with_name(path.name + ".part")
+        rows_written, page = 0, 1
+        with part.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction="ignore")
+            while True:
+                payload = fetch_page(
+                    self.session, self.api_key, self.org_id, chunk_start, chunk_end, page, int(self.config["per_page"]),
+                    timeout=float(self.config["request_timeout_seconds"]),
+                    initial_retry_delay=float(self.config["initial_retry_delay_seconds"]),
+                    maximum_retry_delay=float(self.config["maximum_retry_delay_seconds"]),
+                    rate_limit_block_seconds=float(self.config["rate_limit_block_seconds"]),
+                    rate_limiter=self.rate_limiter, logger=self.logger,
+                )
+                rows = payload["result"]["studentlist"]
+                for row in rows:
+                    writer.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in FIELDS})
+                rows_written += len(rows)
+                self.logger.info(f"[{label} p{page}] wrote {len(rows)} rows ({rows_written:,} in this chunk)")
+                if not rows or not payload.get("page_context", {}).get("has_more_page", False):
+                    break
+                page += 1
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(part, path)
+        return rows_written
 
     def run(self) -> None:
-        chunks = load_or_create_chunk_plan(self.chunk_plan_path, self.start_date, self.end_date,
-                                            int(self.config["chunk_days"]), self.logger)
+        chunks = build_chunks(self.start_date, self.end_date, int(self.config["chunk_days"]))
         self.logger.info(f"Full range {self.start_date} -> {self.end_date} split into "
-                          f"{len(chunks)} chunk(s) of up to {self.config['chunk_days']} days each.")
+                         f"{len(chunks)} chunk(s) of up to {self.config['chunk_days']} days each.")
 
-        checkpoint = load_checkpoint(self.checkpoint_path)
-        resume_state = self._resolve_resume_state(checkpoint, len(chunks))
-        if resume_state is None:
-            return
-        is_resume, start_chunk_idx, start_page, total_written, output_offset = resume_state
+        self.chunk_dir.mkdir(parents=True, exist_ok=True)
+        wanted = {self._chunk_path(*c).name for c in chunks}
+        for leftover in self.chunk_dir.iterdir():
+            if leftover.name not in wanted:  # another range's chunk, or a half-written one from a crash
+                leftover.unlink()
+        done = sum(self._chunk_path(*c).exists() for c in chunks)
+        is_resume = done > 0
 
-        self.logger.info(f"{'Resuming' if is_resume else 'Starting'} enrollment export: "
-                          f"{self.start_date} -> {self.end_date}")
+        self.logger.info(f"{'Resuming' if is_resume else 'Starting'} enrollment export: {self.start_date} -> {self.end_date}")
         self.logger.info(f"Output: {self.output_path}  |  per_page={self.config['per_page']}  |  "
-                          f"chunk_days={self.config['chunk_days']}  |  "
-                          f"max_calls_per_minute={self.config['max_calls_per_minute']}")
-
+                         f"chunk_days={self.config['chunk_days']}  |  max_calls_per_minute={self.config['max_calls_per_minute']}")
         send_mail(
             subject=f"Edmingle export {'resumed' if is_resume else 'started'}",
-            body=(f"{'Resumed' if is_resume else 'Started'} pulling enrollment data "
-                  f"{self.start_date} -> {self.end_date} in {len(chunks)} chunk(s) of "
-                  f"{self.config['chunk_days']} days each.\n"
+            body=(f"{'Resumed' if is_resume else 'Started'} pulling enrollment data {self.start_date} -> {self.end_date} "
+                  f"in {len(chunks)} chunk(s) of {self.config['chunk_days']} days each.\n"
                   f"Output file: {self.output_path}\n"
-                  f"{'Resuming from chunk ' + str(start_chunk_idx + 1) + '/' + str(len(chunks)) + ', page ' + str(start_page) + ', ' + format(total_written, ',') + ' rows already written.' if is_resume else ''}"),
+                  f"{f'{done}/{len(chunks)} chunks were already downloaded.' if is_resume else ''}"),
             logger=self.logger,
         )
 
-        if is_resume and self.output_path.exists() and output_offset is not None:
-            truncate_to_offset(self.output_path, output_offset)
-            self.logger.info(f"Truncated {self.output_path} back to the last confirmed byte "
-                              f"offset ({output_offset:,} bytes) before resuming, in case a "
-                              f"partial write was left by a crash.")
-            file_mode = "a"
-        else:
-            file_mode = "w"
-
         run_started = time.monotonic()
-        chunks_completed_this_run = 0
-
-        with self.output_path.open(file_mode, newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction="ignore")
-
-            if file_mode == "w":
-                writer.writeheader()
-                fh.flush()
-                os.fsync(fh.fileno())
-                output_offset = self.output_path.stat().st_size
-                save_checkpoint(self.checkpoint_path,
-                                 self._checkpoint_dict(0, 0, 0, output_offset, False))
-
-            for chunk_idx in range(start_chunk_idx, len(chunks)):
-                chunk_start, chunk_end = chunks[chunk_idx]
-                page = start_page if chunk_idx == start_chunk_idx else 1
-                self.logger.info(f"--- Chunk {chunk_idx + 1}/{len(chunks)}: "
-                                  f"{chunk_start} -> {chunk_end} ---")
-
-                while True:
-                    payload = fetch_page(
-                        self.session, self.api_key, self.org_id, chunk_start, chunk_end,
-                        page, int(self.config["per_page"]),
-                        timeout=float(self.config["request_timeout_seconds"]),
-                        initial_retry_delay=float(self.config["initial_retry_delay_seconds"]),
-                        maximum_retry_delay=float(self.config["maximum_retry_delay_seconds"]),
-                        rate_limit_block_seconds=float(self.config["rate_limit_block_seconds"]),
-                        rate_limiter=self.rate_limiter,
-                        logger=self.logger,
-                    )
-
-                    rows = payload["result"]["studentlist"]
-                    page_context = payload.get("page_context", {})
-
-                    if rows:
-                        for row in rows:
-                            writer.writerow({k: ("" if row.get(k) is None else row.get(k))
-                                              for k in FIELDS})
-                        fh.flush()
-                        os.fsync(fh.fileno())
-                        total_written += len(rows)
-                        has_more = page_context.get("has_more_page", False)
-                    else:
-                        has_more = False
-
-                    output_offset = self.output_path.stat().st_size
-                    chunk_finished = not has_more
-                    save_checkpoint(self.checkpoint_path, self._checkpoint_dict(
-                        chunk_idx + 1 if chunk_finished else chunk_idx,
-                        0 if chunk_finished else page,
-                        total_written, output_offset,
-                        chunk_finished and (chunk_idx + 1 == len(chunks)),
-                    ))
-
-                    self.logger.info(f"[chunk {chunk_idx + 1}/{len(chunks)} p{page}] "
-                                      f"wrote {len(rows)} rows (running total: {total_written:,})")
-
-                    if chunk_finished:
-                        break
-                    page += 1
-
-                chunks_completed_this_run += 1
+        fetched = 0
+        total_rows = 0
+        for i, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+            path = self._chunk_path(chunk_start, chunk_end)
+            if path.exists():
+                total_rows += count_rows(path)
+                continue
+            self.logger.info(f"--- Chunk {i}/{len(chunks)}: {chunk_start} -> {chunk_end} ---")
+            total_rows += self._download_chunk(chunk_start, chunk_end, f"chunk {i}/{len(chunks)}")
+            fetched += 1
+            if fetched == 1 or i % 10 == 0 or i == len(chunks):
                 elapsed = time.monotonic() - run_started
-                if (chunks_completed_this_run == 1 or (chunk_idx + 1) % 10 == 0
-                        or chunk_idx + 1 == len(chunks)):
-                    avg = elapsed / chunks_completed_this_run
-                    remaining = avg * (len(chunks) - (chunk_idx + 1))
-                    self.logger.info(f"Progress: {chunk_idx + 1}/{len(chunks)} chunks; "
-                                      f"elapsed {format_duration(elapsed)}; "
-                                      f"ETA {format_duration(remaining)}")
+                remaining = elapsed / fetched * (len(chunks) - i)
+                self.logger.info(f"Progress: {i}/{len(chunks)} chunks; elapsed {format_duration(elapsed)}; "
+                                 f"ETA {format_duration(remaining)}")
 
-        self.logger.info(f"Done. Wrote {total_written:,} rows total to {self.output_path}")
+        # Join the chunks into the final file. The previous final file stays untouched until this is complete.
+        tmp = self.output_path.with_name(self.output_path.name + ".tmp")
+        header = io.StringIO()
+        csv.writer(header).writerow(FIELDS)
+        with tmp.open("wb") as out:
+            out.write(header.getvalue().encode("utf-8"))
+            for chunk in chunks:
+                with self._chunk_path(*chunk).open("rb") as fh:
+                    shutil.copyfileobj(fh, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, self.output_path)
+        shutil.rmtree(self.chunk_dir)
 
+        self.logger.info(f"Done. Wrote {total_rows:,} rows total to {self.output_path}")
         send_mail(
             subject="Edmingle export completed",
             body=(f"Finished pulling enrollment data {self.start_date} -> {self.end_date} "
                   f"across {len(chunks)} chunk(s) of {self.config['chunk_days']} days each.\n"
-                  f"Rows written: {total_written:,}\n"
+                  f"Rows written: {total_rows:,}\n"
                   f"Output file: {self.output_path}"),
             logger=self.logger,
         )
@@ -306,9 +224,9 @@ def parse_args():
     parser.add_argument("--start-date", help="DD-MM-YYYY")
     parser.add_argument("--end-date", help="DD-MM-YYYY")
     parser.add_argument("--output", default=None,
-                         help="Output CSV path (default: auto-named from dates, saved next to this script)")
-    parser.add_argument("--api-key", default=None, help="Override api_key from config")
-    parser.add_argument("--org-id", default=None, type=int, help="Override organization_id from config")
+                        help="Output CSV path (default: output/edmingle_enrollment_report.csv next to this script's folder)")
+    parser.add_argument("--api-key", default=None, help="Override api_key from credentials.yaml")
+    parser.add_argument("--org-id", default=None, type=int, help="Override organization_id from credentials.yaml")
     return parser.parse_args()
 
 
@@ -326,9 +244,8 @@ def main() -> int:
     try:
         run.run()
     except PermanentAPIError as exc:
-        # Already logged with full detail inside fetch_page. Retrying won't
-        # help (bad credentials, wrong org id, wrong endpoint) -- stop and
-        # notify immediately rather than retrying blindly.
+        # Already logged with full detail inside fetch_page. Retrying won't help (bad credentials,
+        # wrong org id, wrong endpoint) -- stop and notify immediately rather than retrying blindly.
         run.logger.error("Edmingle export stopped: permanent API error")
         send_mail(
             subject="Edmingle export FAILED (permanent error)",
@@ -340,7 +257,7 @@ def main() -> int:
         )
         return 1
     except KeyboardInterrupt:
-        run.logger.warning("Run interrupted; the next run will resume from the saved checkpoint.")
+        run.logger.warning("Run interrupted; the next run will skip the chunks already downloaded.")
         return 130
     except Exception:
         run.logger.exception("Edmingle export run failed")
@@ -349,7 +266,7 @@ def main() -> int:
             body=(f"edmingle_export.py crashed unexpectedly.\n\n"
                   f"Check {run.log_path} on the VPS for the traceback.\n\n"
                   f"To resume: SSH into the VPS, cd into this pipeline's scripts/ folder, and "
-                  f"re-run the same command -- it will resume from the last saved checkpoint "
+                  f"re-run the same command -- it skips the chunks already downloaded "
                   f"rather than starting over."),
             logger=run.logger,
         )

@@ -2,50 +2,45 @@
 
 ## 1. Overview & Purpose
 
-Pulls row-level enrollment records from Edmingle's `/reports/enrollment` endpoint over a historical date range into one CSV. Edmingle rejects large single-shot ranges, so the range is split into fixed-size day "chunks", fetched page by page, with every page checkpointed so an interrupted run resumes exactly where it stopped.
+Pulls row-level enrollment records from Edmingle's `/reports/enrollment` endpoint over a historical date range into one CSV. Edmingle rejects large single-shot ranges, so the range is split into fixed-size day "chunks", fetched page by page. Each chunk is downloaded to its own file and renamed when complete, so an interrupted run resumes by skipping the finished chunks (at most one chunk is re-downloaded).
 
 **Status:** the last logged run (2026-09-23) stopped on a permanent API error, and the `send_mail` defect found in the 2026-09-24 audit was fixed on 2026-09-25 — see Section 9.
 
-**Purpose:** one historical enrollment-level CSV for an operator-specified range, resumable across crashes without re-fetching or duplicating rows.
+**Purpose:** one historical enrollment-level CSV for an operator-specified range, resumable across crashes without re-fetching finished chunks or duplicating rows.
 
 ## 2. High-Level Data Flow
 
 ```mermaid
 flowchart TD
-    A["python edmingle_export.py --start-date --end-date"] --> B["load_or_create_chunk_plan()<br/>splits range into chunk_days windows,<br/>persisted to .chunks.json"]
-    B --> C["load_checkpoint() / _resolve_resume_state()"]
-    C -->|already completed, same params| Z1[Log message, exit - delete checkpoint to force rerun]
-    C -->|fresh or resumable| D[Send started/resumed email]
-    D --> E{Resuming?}
-    E -->|yes| F["truncate_to_offset()<br/>cut CSV back to last confirmed byte offset"]
-    E -->|no| G[Open CSV in write mode, write header]
-    F --> H[For each remaining chunk]
-    G --> H
-    H --> I["fetch_page() - GET /reports/enrollment<br/>one page at a time"]
+    A["python edmingle_export.py --start-date --end-date"] --> B["build_chunks()<br/>split the range into chunk_days windows"]
+    B --> C["delete leftovers in &lt;output&gt;.chunks/<br/>(other ranges, half-written .part files)"]
+    C --> D[Send started / resumed email]
+    D --> E[For each window]
+    E -->|chunk file already there| E
+    E -->|not yet downloaded| I["fetch_page() - GET /reports/enrollment<br/>one page at a time"]
     I -->|429| J[Cooldown, reset rate limiter, retry]
     I -->|400/401/403/404| K[Raise PermanentAPIError]
-    I -->|200| L[Write rows, flush+fsync, save checkpoint]
-    L --> H
-    K --> M["Log ERROR, send FAILED email, exit 1<br/>-- CURRENT STATE as of 2026-09-23 12:43:08"]
-    H -->|all chunks done| N[Log Done, send completed email]
+    I -->|200| L["Write rows to &lt;window&gt;.csv.part;<br/>rename to &lt;window&gt;.csv when the window is done"]
+    L --> E
+    K --> M["Log ERROR, send FAILED email, exit 1"]
+    E -->|all windows present| N["Join into the final CSV (header + chunks),<br/>delete the chunk folder, send completed email"]
 ```
 
 **Lineage:** enrollment API → `fetch_page()` per (chunk, page) → `edmingle_enrollment_report.csv`
-(append-only within a run, overwritten on a fresh/differently-scoped run). No downstream script
-within this repo consumes it.
+(built from the chunk files when every chunk is done; it replaces the previous file atomically). No
+downstream script within this repo consumes it.
 
 ## 3. Repository Structure
 
 | Path | Purpose |
 |---|---|
-| `scripts/edmingle_export.py` | Orchestrator — config, checkpoint, logging, the `EdmingleExportRun` class. |
+| `scripts/edmingle_export.py` | Orchestrator — chunk windows, per-chunk download, joining, logging, the `EdmingleExportRun` class. |
 | `scripts/edmingle_api.py` | `fetch_page()` — one (chunk, page) GET through `common.get_json` (error classification, 429 backoff). |
-| `scripts/edmingle_chunker.py` | Splits a date range into `chunk_days` windows, persisted to `.chunks.json`. |
-| `scripts/edmingle_constants.py` | `ENROLLMENT_PATH` (appended to `credentials.yaml`'s `base_url`), date format, output column order, HTTP status sets. |
-| `scripts/edmingle_io_utils.py` | `truncate_to_offset()` plus re-exported `common.py` helpers. |
+| `scripts/edmingle_constants.py` | `ENROLLMENT_PATH` (appended to `credentials.yaml`'s `base_url`), date format, output column order. |
 | `output/edmingle_enrollment_report.csv` | Fixed-name output (8,573 lines incl. header, last written 2026-09-08). |
-| `output/*.checkpoint.json` / `*.chunks.json` / `.log` | Resume state, chunk plan, run log — all derived from the CSV's own path. |
-| `output/edmingle_enrollment_01012010_25082026.csv` | A 115MB/450,797-line file with **no** matching checkpoint/chunks/log companion — see Section 9. |
+| `output/edmingle_enrollment_report.chunks/` | One `<start>_<end>.csv` per finished chunk (plus a `.part` file while one is downloading); exists only while a run is unfinished, then deleted. |
+| `output/edmingle_enrollment_report.log` | Run log. `*.checkpoint.json` / `*.chunks.json` files from the old design (before 2026-09-25) are no longer used and can be deleted. |
+| `output/edmingle_enrollment_01012010_25082026.csv` | A 115MB/450,797-line file with **no** matching log companion — see Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `RollingRateLimiter`, atomic writes, `send_mail`. |
 | `../notifications.yaml` | SMTP/recipient config (this pipeline's own folder). |
 
@@ -58,18 +53,17 @@ within this repo consumes it.
 ## 5. Extraction Process
 
 1. Load credentials (exit if missing) and merge the inline `DEFAULTS`.
-2. `run()` builds/loads the chunk plan, then compares the existing checkpoint's `start_date`/`end_date`/`chunk_days`/`per_page` with this invocation: identical + incomplete → resume; identical + complete → refuse (delete the checkpoint to force a rerun); different → start fresh, overwriting the output.
-3. Send a start/resume email; on resume, first truncate the CSV to the last confirmed byte offset.
-4. Fetch each chunk's pages, write immediately (flush + `fsync`), save the checkpoint after every page; `None` becomes an empty string, never `"None"`.
-5. On completion send a summary email. A permanent error (400/401/403/404) or any unhandled exception stops the run with a failure email — no retry loop for those.
+2. `run()` builds the chunk windows and deletes anything in `<output>.chunks/` that is not one of this range's chunk files (another range's chunks, or a half-written `.part` file).
+3. Send a started email (or "resumed" if some chunk files already exist).
+4. For each window without a chunk file: fetch its pages, write them to `<window>.csv.part`, then rename to `<window>.csv`; `None` becomes an empty string, never `"None"`. Finished windows are skipped.
+5. When every window is present, write the header plus all chunk files to `<output>.tmp`, atomically replace the final CSV, delete the chunk folder, and send a completed email. A permanent error (400/401/403/404) or any unhandled exception stops the run with a failure email — no retry loop for those.
 
 ## 6. Function Reference
 
 - **`fetch_page(...)`** — one page for one chunk, via `common.get_json`. Network/JSON/shape errors retry forever with exponential backoff; `429` sleeps `max(rate_limit_block_seconds, Retry-After)` and resets the limiter; `400/401/403/404` raise `PermanentAPIError`.
 - **`build_chunks(start, end, chunk_days)`** — fixed windows; `sys.exit` if `start > end`.
-- **`load_or_create_chunk_plan(...)`** — reuses the persisted plan if start/end/chunk_days match, else regenerates and persists.
-- **`truncate_to_offset(path, offset)`** — truncates to a known-good byte offset (`r+b`), then flush + `fsync`.
-- **`EdmingleExportRun._resolve_resume_state(...)`** — classifies the run as fresh, resumable or already complete (`None`).
+- **`EdmingleExportRun._download_chunk(...)`** — fetches every page of one window into a `.part` file, then renames it; returns the row count.
+- **`EdmingleExportRun.run()`** — the whole flow above.
 
 ## 7. Configuration & Parameters
 
@@ -81,12 +75,10 @@ within this repo consumes it.
 ## 8. Data Transformation, Output & Schema
 
 **Transformations:** null→empty-string (never the literal `"None"`) · fixed column order (unknown
-API fields dropped, missing fields blank, neither crashes) · chunked fetch appended into one flat
-file in fetch order, no cross-chunk sort/dedup.
+API fields dropped, missing fields blank, neither crashes) · chunk files joined into one flat
+file in chunk order, no cross-chunk sort/dedup.
 
-**Output:** `edmingle_enrollment_report.csv` — a fixed filename every run appends to (resume) or
-overwrites (fresh/rescoped run); changed from a per-date-range naming convention specifically to
-bound disk usage. Companion files always sit alongside it via `Path.with_suffix(...)`.
+**Output:** `edmingle_enrollment_report.csv` — a fixed filename, replaced atomically only when a run finishes (the previous file stays intact until then; the file does not exist partway through a first run); the fixed name bounds disk usage. The chunk folder sits beside it and is deleted on success. Re-running a finished range downloads it again.
 
 **Database integration:** not applicable — CSV/JSON only.
 
@@ -99,8 +91,7 @@ bound disk usage. Companion files always sit alongside it via `Path.with_suffix(
 ## 9. Data Quality & Known Limitations
 
 **Implemented checks:** response-shape validation before trusting a page, `start_date ≤ end_date`
-enforcement, chunk-plan and checkpoint parameter matching before reuse/resume, byte-offset
-truncation before resuming, null→empty-string handling.
+enforcement, atomic per-chunk files (a half-written chunk is never reused), atomic replacement of the final file, null→empty-string handling.
 
 **Confirmed limitations:**
 - **Blocked at the last run.** The live log ends with `2026-09-23 12:43:08 [ERROR] Edmingle export stopped: permanent API error` (a 400/401/403/404, no retry). Last successful run: **2026-09-08 06:02:23**, 8,572 rows for August 2026 (`completed: true`). API access with the current key worked when tested on 2026-09-25, so the cause was probably the earlier key.
@@ -130,7 +121,7 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running:
 1. Fill in `../../credentials.yaml`; fill in `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
 2. **Dates are `DD-MM-YYYY`** — unlike every other pipeline (`YYYY-MM-DD`), because that is what Edmingle's endpoint expects.
-3. No watchdog: a crash means running the same command again (it resumes). `--output` overrides the fixed default filename and its companions.
+3. No watchdog: a crash means running the same command again (it skips the finished chunks). `--output` overrides the fixed default filename; the chunk folder and log are named after it.
 
 **Run it in tmux** (session name = folder name; long ranges take hours):
 
@@ -151,8 +142,9 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 
 ## 14. Important Business / Technical Rules
 
-- Chunking exists because Edmingle rejects large single-shot ranges — always split into `chunk_days` (default 30) windows, persisted so boundaries never shift between runs.
-- Resume logic is parameter-aware: checkpoint params vs. current invocation decide resume / refuse / fresh-start-and-overwrite.
+- Chunking exists because Edmingle rejects large single-shot ranges — always split into `chunk_days` (default 30) windows; a chunk file is named after its window, so a resume can only reuse chunks of the same range.
+- Resume is per chunk: a crash costs at most one chunk of re-downloading (a recent 30-day chunk is about 9,000 rows, i.e. ~45 pages of 200, or ~1.5 minutes); there is no page-level checkpoint.
+- A different range after a finished run simply runs (before 2026-09-25 the old checkpoint made the script silently do nothing in that case).
 - Fixed output filename (changed 2026-09-23, was per-date-range before) specifically bounds disk usage.
 - Permanent (400/401/403/404) vs. transient (408/429/5xx, network, JSON) errors are classified differently — permanent stops immediately, transient retries forever with capped backoff (no retry-count ceiling).
 - No external watchdog (removed 2026-09-23) — the script emails on failure from its own exception handling, same pattern as `ela_mis_datasets`.
@@ -163,15 +155,14 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 |---|---|---|
 | "Edmingle export stopped: permanent API error" | 400/401/403/404 from Edmingle | `api_key`/`organization_id`; rotate via `edmingle_api_key_generator` if expired, re-run |
 | `TypeError: send_mail() got multiple values for argument 'subject'` | The old defect (fixed 2026-09-25) — means an old copy of the script is running | Update `edmingle_export.py` from the repo |
-| "this exact run already completed" | Re-running identical start/end dates | Delete `.checkpoint.json`, or use a different range |
 | Run appears to hang on one chunk | Active 429 cooldown | Check the log for "rate limited (429)" — expected pacing, not a hang |
-| Output row count looks short after a crash | Expected — resume truncates to last confirmed offset | Compare `total_written` against `wc -l` after the next successful resume |
+| No `edmingle_enrollment_report.csv` yet, but chunk files exist | The first run has not finished | Re-run the same command; check `output/edmingle_enrollment_report.chunks/` |
 
 ## 16. Maintenance Guide
 
 - **Chunk size/rate limits/retry behavior** → the `DEFAULTS` dict in `edmingle_export.py` (no config file or CLI flag).
 - **Output columns** → `FIELDS` in `edmingle_constants.py`.
-- **Permanent vs. transient classification** → the status sets in `edmingle_constants.py`.
+- **Permanent vs. transient classification** → `common.get_json`'s `permanent` default.
 - **Investigate the unexplained large CSV** → check server access logs around 2026-09-24 00:24–00:25 UTC for any manual command that could have placed it there.
 
 ## 17. Upstream & Downstream Dependencies

@@ -5,7 +5,7 @@ Exports enrollment rows for a date range in 30-day chunks into one CSV; long ran
 ## Before you start
 - `/home/projectdev/ela_datasets/credentials.yaml` has a valid key; `notifications.yaml` (this folder) is optional.
 - **Dates are `DD-MM-YYYY`** (every other dataset uses `YYYY-MM-DD`).
-- Output is always `output/edmingle_enrollment_report.csv` and is **overwritten** by a run over a different range — copy it away first if needed.
+- Output is always `output/edmingle_enrollment_report.csv` and is **replaced** when a run finishes (it does not exist partway through a first run) — copy it away first if you need to keep it.
 - Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.
 
 ## Run (inside tmux — see below)
@@ -15,10 +15,10 @@ python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026
 Progress lines look like `[chunk 1/2 p1] wrote 200 rows …`; it ends with `Done. Wrote N rows total`.
 
 ## Check
-`output/edmingle_enrollment_report.csv.checkpoint.json` shows `"completed": true`; `output/edmingle_enrollment_report.log` has no errors.
+The log ends with `Done. Wrote N rows total`, `output/edmingle_enrollment_report.csv` was just replaced, and the `output/edmingle_enrollment_report.chunks/` folder is gone.
 
 ## If it stops
-Re-run the same command; it resumes from the checkpoint. A range that already completed is refused — delete `output/*.checkpoint.json` to force a redo.
+Re-run the same command; it skips the chunks already downloaded (at most one 30-day chunk is repeated). Re-running a finished range downloads it again.
 
 ## tmux
 ```
