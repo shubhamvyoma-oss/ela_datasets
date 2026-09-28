@@ -45,10 +45,16 @@ import requests
 SCRIPT_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
 
-TRANSIENT_ERROR_COOLDOWN_SECONDS = 300  # known 429 penalty-state behavior
-MAX_RETRIES_PER_PAGE = 5
-REQUEST_TIMEOUT_SECONDS = 90
-DEFAULTS = {"per_page": 50, "sort_order": -1, "rate_limit_per_minute": 30, "output_csv": "user_country_list.csv"}
+# Defaults below apply only when the config file doesn't set the key itself.
+DEFAULTS = {
+    "per_page": 50,
+    "sort_order": -1,
+    "rate_limit_per_minute": 30,
+    "output_csv": "user_country_list.csv",
+    "transient_error_cooldown_seconds": 300,  # known 429 penalty-state behavior
+    "max_retries_per_page": 5,
+    "request_timeout_seconds": 90,
+}
 
 CSV_FIELDS = [
     "user_id", "name", "email", "contact_number",
@@ -96,8 +102,8 @@ def load_config(config_path: Path) -> dict:
 
 
 def fetch_page(session, cfg, end_date, page, rate_limiter):
-    """One page of /user/useranalyticslist through common.get_json (up to MAX_RETRIES_PER_PAGE attempts, a
-    TRANSIENT_ERROR_COOLDOWN_SECONDS wait on 429), or None if it kept failing."""
+    """One page of /user/useranalyticslist through common.get_json (up to cfg["max_retries_per_page"]
+    attempts, a cfg["transient_error_cooldown_seconds"] wait on 429), or None if it kept failing."""
     params = {
         "page": page,
         "per_page": cfg["per_page"],
@@ -110,8 +116,9 @@ def fetch_page(session, cfg, end_date, page, rate_limiter):
     try:
         return common.get_json(
             f"{cfg['base_url']}/user/useranalyticslist", headers={"apikey": cfg["apikey"], "ORGID": str(cfg["orgid"])},
-            params=params, session=session, timeout=REQUEST_TIMEOUT_SECONDS, attempts=MAX_RETRIES_PER_PAGE, delay=5,
-            max_delay=30, block_seconds=TRANSIENT_ERROR_COOLDOWN_SECONDS, rate_limiter=rate_limiter,
+            params=params, session=session, timeout=cfg["request_timeout_seconds"],
+            attempts=cfg["max_retries_per_page"], delay=5,
+            max_delay=30, block_seconds=cfg["transient_error_cooldown_seconds"], rate_limiter=rate_limiter,
             label=f"  [page {page}]", logger=_LOG,
         )
     except common.ApiError as error:

@@ -90,7 +90,7 @@ flowchart TD
 | Source | Key(s) | Purpose |
 |---|---|---|
 | Stage 1 CLI | `--config` (default `ip_driven_country_data_config.json`) | Points at the JSON config. |
-| Stage 1 config | `filter_key`, `sort_order`, `per_page`, `start_date`, `end_date` (optional, default: end of today IST), `rate_limit_per_minute`, `output_csv` | All non-secret Stage-1 behaviour. |
+| Stage 1 config | `filter_key`, `sort_order`, `per_page`, `start_date`, `end_date` (optional, default: end of today IST), `rate_limit_per_minute`, `output_csv`, `request_timeout_seconds`, `max_retries_per_page`, `transient_error_cooldown_seconds` | All non-secret Stage-1 behaviour. |
 | Stage 1 credentials | `../../credentials.yaml` → `api_key`/`organization_id`/`base_url` (via `common.edmingle_settings()`) | Exits with a clear message if any is missing — no hardcoded fallback ids or URL. |
 | Stage 2 CLI | `--input`, `--output`, `--dial-code-column` (default `"Contact Number Dial Code"`), `--encoding` | File selection and column mapping. |
 | Stage 3 CLI | `--dial-input`, `--ip-input`, `--output` | Input/output file paths. |
@@ -210,7 +210,7 @@ export into `input/` before each run.
 - **Stage 2 column rename** → `--dial-code-column`, or the `argparse` default.
 - **Stage 3 join key change** → rewrite `normalize_email()`/`load_ip_driven_lookup()`/`merge()` — not a simple config change.
 - **Country-name reconciliation** (if wanted) → a new normalization step in `merge()` against a canonical country table.
-- **Rate-limit tuning** → `rate_limit_per_minute` in the JSON config; retry/cooldown constants are hardcoded and need a code change.
+- **Rate-limit/retry/timeout tuning** → `rate_limit_per_minute`, `max_retries_per_page`, `transient_error_cooldown_seconds`, `request_timeout_seconds` in the JSON config (moved out of hardcoded constants 2026-09-28) — no code change needed.
 
 ## 17. Security Considerations
 

@@ -3,7 +3,7 @@
 Daily student attendance (`report_type=55`), one API call per day → per-batch summary + per-session CSV. Details: [ATTENDANCE.md](ATTENDANCE.md).
 
 ## Before you start
-- `/home/projectdev/ela_datasets/credentials.yaml` has a valid Edmingle key; `scripts/config.yaml` flags are right.
+- `/home/projectdev/ela_datasets/credentials.yaml` has a valid Edmingle key; `scripts/attendance_config.yaml` flags are right.
 - Free disk ≈ staging size + 0.5× (2020→2026 ≈ 5.6 GB + 2.8 GB). The script checks this and stops if short.
 - Notification emails go nowhere until `notifications.yaml` (this folder) has real addresses.
 - Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.

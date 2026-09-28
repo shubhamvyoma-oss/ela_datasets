@@ -4,5 +4,8 @@
   "per_page": 500,
   "start_date": "01-01-2020T00:00:00+05:30",
   "rate_limit_per_minute": 30,
-  "output_csv": "user_country_list.csv"
+  "output_csv": "user_country_list.csv",
+  "transient_error_cooldown_seconds": 300,
+  "max_retries_per_page": 5,
+  "request_timeout_seconds": 90
 }

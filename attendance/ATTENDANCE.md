@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart TD
-    A[CLI args: --from/--to/--date/--from-file/--dry-run] --> B[load_config: config.yaml + ../../credentials.yaml + notifications.yaml]
+    A[CLI args: --from/--to/--date/--from-file/--dry-run] --> B[load_config: attendance_config.yaml + ../../credentials.yaml + notifications.yaml]
     B --> C[setup_logging: TimedRotatingFileHandler, 30-day retention]
     C --> D[acquire_lock: exclusive OS file lock, refuses a concurrent run]
     D --> E[check_disk_space]
@@ -46,7 +46,7 @@ automatically.
 | Path | Purpose |
 |---|---|
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
-| `scripts/config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
+| `scripts/attendance_config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
 | `../notifications.yaml` | SMTP + recipients + alert-granularity toggles (this pipeline's own folder, a sibling of `scripts/`). |
 | `output/` | Summaries, `staging/` (the resume state), `logs/`, the lock file, and a temporary `_spill/` folder while summarising (deleted afterwards). |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
@@ -56,14 +56,14 @@ automatically.
 
 | Source | Endpoint | Method | Auth | Parameters | Pagination | Rate Limit |
 |---|---|---|---|---|---|---|
-| Edmingle reporting API | `<base_url>/report/csv` (`base_url` from `credentials.yaml`; `config.yaml api.url` only overrides it) | GET | `apikey`/`orgid`/`ORGID` **headers** from shared `credentials.yaml` (moved out of the URL 2026-09-25 — the endpoint accepts headers) | `report_type=55`, `organization_id`, `start_time`/`end_time` (one IST day per call), `response_type=1` | None — one call per calendar day | Client-side pacing only (`rate_limit_sleep_seconds`, 2.5s); reacts to server `429`/`Retry-After`. Real Edmingle-side ceiling: requires confirmation. |
+| Edmingle reporting API | `<base_url>/report/csv` (`base_url` from `credentials.yaml`; `attendance_config.yaml api.url` only overrides it) | GET | `apikey`/`orgid`/`ORGID` **headers** from shared `credentials.yaml` (moved out of the URL 2026-09-25 — the endpoint accepts headers) | `report_type=55`, `organization_id`, `start_time`/`end_time` (one IST day per call), `response_type=1` | None — one call per calendar day | Client-side pacing only (`rate_limit_sleep_seconds`, 2.5s); reacts to server `429`/`Retry-After`. Real Edmingle-side ceiling: requires confirmation. |
 
 **Upstream:** Edmingle LMS, plus the shared `credentials.yaml`/`common.py`.
 
 ## 5. Extraction Process
 
 1. Parse CLI args.
-2. `load_config()` — merges `config.yaml`, shared credentials, notifications; exits on missing required keys.
+2. `load_config()` — merges `attendance_config.yaml`, shared credentials, notifications; exits on missing required keys.
 3. `setup_logging()` — daily-rotating file + console, IST timestamps.
 4. `acquire_lock()` — an exclusive OS file lock held until the process exits (even on a crash), so a second concurrent run is refused and there is never a stale lock to clear.
 5. `check_disk_space()` — aborts if free space is below `pipeline.min_free_disk_mb`.
@@ -79,7 +79,7 @@ automatically.
 
 ## 6. Function Reference
 
-- **`load_config(path)`** — merges `config.yaml` over defaults, injects credentials/notifications, validates required keys, anchors relative paths to the script's folder.
+- **`load_config(path)`** — merges `attendance_config.yaml` over defaults, injects credentials/notifications, validates required keys, anchors relative paths to the script's folder.
 - **`fetch_one_day(...)`** — one day through `common.get_json` (retry/backoff): `200` parsed; `429` waits `Retry-After` + 2 s (30 s if the header is absent); `401/403/404`/Edmingle `6002` → `FatalAPIError` (no retry); `400`/`6001` → date skipped; `5xx` → backoff+retry. Network errors and timeouts back off and retry like any other transient failure (there is no separate internet-outage waiting since 2026-09-25). Raises `ValueError` when retries run out.
 - **`resolve_session_id_column(...)`** — `attendance_id`, else `class_Id` with a warning (undercounts sessions: `class_Id` is a subject id, not a session).
 - **`filter_active_students(...)`** — allow-list on `studentBatchStatus` (default `["Active"]`), togglable.
@@ -96,7 +96,7 @@ automatically.
 | CLI | `--config` (cwd-relative, not script-relative), `--date`, `--from`/`--to`, `--from-file`, `--dry-run`, `--verbose` | Which dates, which mode. |
 | `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id` | Auth — fatal if missing. |
 | `notifications.yaml` | SMTP host/port/user/password, recipients, per-severity toggles; Slack/Teams placeholders (unimplemented) | Alerting. |
-| `config.yaml` | `api.*` (url/timeouts/retry tuning), `paths.*`, `pipeline.*` (lookback, present/absent/late values, session id column, date/time formats, active-student filtering) | Runtime behaviour. |
+| `attendance_config.yaml` | `api.*` (url/timeouts/retry tuning), `paths.*`, `pipeline.*` (lookback, present/absent/late values, session id column, date/time formats, active-student filtering) | Runtime behaviour. |
 | Hardcoded | `VERSION`, IST offset, `OUTPUT_COLUMNS`, `SESSION_OUTPUT_COLUMNS`, extra "marked" codes `E`/`OL`/`NA` | Fixed schema/constants. |
 
 ## 8. Data Transformation, Output & Schema
@@ -181,7 +181,7 @@ Docstring states: `pip install pandas requests pyyaml`.
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in, `config.yaml` flags checked (`exclude_inactive_students` is `false` here), `../notifications.yaml` filled in if email is wanted (currently placeholders).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in, `attendance_config.yaml` flags checked (`exclude_inactive_students` is `false` here), `../notifications.yaml` filled in if email is wanted (currently placeholders).
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -237,10 +237,10 @@ None — triggered manually. No unattended auto-restart wrapper exists (a stale 
 
 ## 16. Maintenance Guide
 
-- **Endpoint/params change** → `_day_params()`; the URL comes from `credentials.yaml`'s `base_url` (or an `api.url` override in `config.yaml`).
+- **Endpoint/params change** → `_day_params()`; the URL comes from `credentials.yaml`'s `base_url` (or an `api.url` override in `attendance_config.yaml`).
 - **New/renamed status codes** → `pipeline.present_value`/`absent_value`/`late_value`; the hardcoded `E`/`OL`/`NA` codes live in `build_class_summary()` itself.
 - **Output schema change** → `OUTPUT_COLUMNS`/`SESSION_OUTPUT_COLUMNS` plus the summary-building functions.
-- **Retry/backoff tuning** → `config.yaml api.*`, no code change needed.
+- **Retry/backoff tuning** → `attendance_config.yaml api.*`, no code change needed.
 - **New notification channel** → `notifications.yaml` has Slack/Teams placeholders, but `notify()` only sends email.
 
 ## 17. Security Considerations

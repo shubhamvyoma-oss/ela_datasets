@@ -11,7 +11,7 @@ USAGE
   python attendance.py --from-file raw.csv  # skip API
   python attendance.py --dry-run --from 2020-01-01 --to 2020-01-07
   (a re-run of the same command skips finished days and retries the rest; delete output/staging to start over)
-  python attendance.py --config /other/config.yaml ...
+  python attendance.py --config /other/attendance_config.yaml   # default: attendance_config.yaml
 """
 
 import argparse
@@ -128,14 +128,14 @@ def load_config(config_path: str) -> dict:
     if not path.exists():
         sys.exit(
             f"\nConfig file not found: {config_path}\n"
-            f"See ../ATTENDANCE.md for the required config.yaml keys.\n"
+            f"See ../ATTENDANCE.md for the required attendance_config.yaml keys.\n"
         )
     with open(path, encoding="utf-8") as f:
         user_cfg = yaml.safe_load(f) or {}
 
     cfg = _deep_merge(_DEFAULTS, user_cfg)
 
-    # Edmingle API key/org id are shared across every ela_datasets/ pipeline, not read from config.yaml.
+    # Edmingle API key/org id are shared across every ela_datasets/ pipeline, not read from attendance_config.yaml.
     script_dir = Path(__file__).resolve().parent
     creds_path = script_dir.parent.parent / "credentials.yaml"
     edmingle = common.edmingle_settings(path=creds_path)
@@ -407,7 +407,7 @@ def run_pull_loop(dates: list, session: requests.Session, cfg: dict, log: loggin
                 "Error":    str(e),
                 "Date":     date_str,
                 "Progress": f"{i-1}/{len(dates)} dates completed",
-                "Action":   "Fix config.yaml / credentials.yaml and re-run (finished days are kept; the run will resume).",
+                "Action":   "Fix attendance_config.yaml / credentials.yaml and re-run (finished days are kept; the run will resume).",
             }, log)
             raise PipelineError(f"Fatal API error: {e}")
 
@@ -461,8 +461,9 @@ _NEEDED_COLUMNS = [
     "teacherName",
 ]
 _ROW_HASH = "_row_hash"
-_PARTITION_RAW_BYTES = 150 * 1024 ** 2    # raw CSV bytes per partition -- keeps one partition well under 1 GB of RAM
-_SPILL_DISK_FRACTION = 0.5                # the pruned spill files are roughly half the size of the raw ones
+# Defaults below apply only when config.yaml's pipeline: section doesn't set the key itself.
+_DEFAULT_PARTITION_RAW_MB = 150       # raw CSV MB per partition -- keeps one partition well under 1 GB of RAM
+_DEFAULT_SPILL_DISK_FRACTION = 0.5    # the pruned spill files are roughly half the size of the raw ones
 
 
 def _row_hash(raw: pd.DataFrame) -> pd.Series:
@@ -491,7 +492,7 @@ def summarise_frame(raw_df: pd.DataFrame, cfg: dict, log: logging.Logger):
 
 
 def summarise_staging_files(file_paths: list, cfg: dict, label: str, log: logging.Logger,
-                            part_bytes: int = _PARTITION_RAW_BYTES):
+                            part_bytes: int = None):
     """Same result as concatenating every staging file and summarising the lot, without ever holding
     more than one partition in memory (the full set is ~10 million rows and does not fit in RAM).
 
@@ -503,6 +504,8 @@ def summarise_staging_files(file_paths: list, cfg: dict, label: str, log: loggin
 
     if not file_paths:
         raise PipelineError("No staging files to combine.")
+    if part_bytes is None:
+        part_bytes = int(cfg["pipeline"].get("partition_raw_mb", _DEFAULT_PARTITION_RAW_MB)) * 1024 ** 2
     paths       = sorted(file_paths)
     total_bytes = sum(Path(p).stat().st_size for p in paths)
     n_parts     = max(1, -(-total_bytes // part_bytes))
@@ -511,7 +514,8 @@ def summarise_staging_files(file_paths: list, cfg: dict, label: str, log: loggin
 
     reserve = cfg["pipeline"]["min_free_disk_mb"] * 1024 ** 2
     free    = shutil.disk_usage(out_dir).free
-    need    = int(total_bytes * _SPILL_DISK_FRACTION) + reserve
+    spill_fraction = float(cfg["pipeline"].get("spill_disk_fraction", _DEFAULT_SPILL_DISK_FRACTION))
+    need    = int(total_bytes * spill_fraction) + reserve
     if free < need:
         raise PipelineError(
             f"Not enough disk to summarise {len(paths)} staging files ({total_bytes / 1e9:.1f} GB): "
@@ -716,7 +720,7 @@ def validate_present_value(df: pd.DataFrame, cfg: dict):
             f"PRESENT_VALUE={pv!r} not in studentAttendanceStatus. "
             f"Observed: {observed}. "
             f"Every attendance metric would be 0. "
-            f"Fix pipeline.present_value in config.yaml."
+            f"Fix pipeline.present_value in attendance_config.yaml."
         )
 
 
@@ -851,7 +855,7 @@ def build_session_wise_output(df: pd.DataFrame, session_col: str, cfg: dict) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Edmingle report_type=55 attendance pipeline")
-    parser.add_argument("--config",    default="config.yaml")
+    parser.add_argument("--config",    default="attendance_config.yaml")
     parser.add_argument("--date",      type=str)
     parser.add_argument("--from",      dest="from_date", type=str)
     parser.add_argument("--to",        dest="to_date",   type=str)

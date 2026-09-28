@@ -75,6 +75,15 @@ pipeline:
   # Minimum free disk space (MB) required before the run starts.
   min_free_disk_mb: 1024
 
+  # Raw CSV MB per partition when summarising staging files (keeps one partition
+  # well under 1 GB of RAM). Was a hardcoded constant; moved here 2026-09-28.
+  partition_raw_mb: 150
+
+  # Fraction of the raw staging bytes reserved as scratch disk for the pruned
+  # spill files (they run roughly half the size of the raw ones). Was a
+  # hardcoded constant; moved here 2026-09-28.
+  spill_disk_fraction: 0.5
+
   # Confirmed on real report_type=55 export: single letter "P" / "A" / "-"
   present_value: "P"
 
