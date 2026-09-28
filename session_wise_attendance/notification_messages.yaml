@@ -1,0 +1,28 @@
+# =============================================================================
+# session_wise_attendance -- notification_messages.yaml
+#
+# The WORDING of every email this pipeline sends. Who receives them, and the mail
+# login, are in ../notifications.yaml at the repo root (a secret; not on GitHub).
+#
+# HOW TO EDIT
+#   * Change any text you like. Each message has a `subject` and a `body`.
+#   * Words in {curly braces} are filled in by the pipeline when it sends the email
+#     (a row count, a date, an error). Keep them spelled EXACTLY as they are, and only
+#     use the ones already in that message.
+#   * Some have a format: {pct:.1f} = one decimal place, {rows:,} = thousands
+#     separators. Leave those as they are.
+#   * Multi-line text: start with |-  and indent every line the same amount.
+#   * `when` is just a note for people; the pipeline ignores it.
+#   * If this file is missing or a {placeholder} is misspelled, the pipeline does NOT
+#     stop: it sends a plain fallback email listing the raw values.
+# =============================================================================
+
+run_report:
+  when: At the end of each of the three stages
+  status_success: SUCCESS
+  status_with_errors: COMPLETED WITH ERRORS
+  subject: "[Vyoma Pipeline] {stage_name} - {status} ({timestamp})"
+  body: |-
+    Vyoma attendance pipeline - {stage_name} run report
+
+    {details}

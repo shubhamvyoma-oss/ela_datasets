@@ -7,7 +7,7 @@ This already runs by itself, automatically, on the **25th of each month at 09:00
 ## Before you start
 - The old key stops working the moment you rotate — there's no overlap.
 - It will **refuse to run** (and email you that it skipped) if any other pipeline is currently running. Check `tmux ls` first if you're not sure.
-- `credentials.yaml` needs the `tutor_login` details filled in; `notifications.yaml` (this folder) needs a working email address.
+- `credentials.yaml` needs the `tutor_login` details filled in; the central `notifications.yaml` (repo root) needs a working sender login and recipients.
 - After rotating, you also need to manually copy the new key into `/home/projectdev/attendance_dataset/credentials.yaml` — that's a separate standalone copy that isn't updated automatically.
 
 ## Steps

@@ -42,7 +42,7 @@ downstream script within this repo consumes it.
 | `output/edmingle_enrollment_report.log` | Run log. `*.checkpoint.json` / `*.chunks.json` files from the old design (before 2026-09-25) are no longer used and can be deleted. |
 | `output/edmingle_enrollment_01012010_25082026.csv` | A 115MB/450,797-line file with **no** matching log companion — see Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `RollingRateLimiter`, atomic writes, `send_mail`. |
-| `../notifications.yaml` | SMTP/recipient config (this pipeline's own folder). |
+| `../../notifications.yaml`, `../notification_messages.yaml` | Central SMTP/recipient config (repo root) and, in this pipeline's folder, the wording of the 5 emails. |
 
 ## 4. Source System
 
@@ -69,8 +69,8 @@ downstream script within this repo consumes it.
 
 - **CLI:** `--start-date`/`--end-date` (required, `DD-MM-YYYY`), `--output` (optional), `--api-key`/`--org-id` (override credentials per-run).
 - **`../../credentials.yaml`:** `api_key`, `organization_id` — required.
-- **`notifications.yaml`:** email config; Slack/Teams present but unused.
-- **`DEFAULTS`** (inlined, no config file): `chunk_days=30`, `per_page=200`, `max_calls_per_minute=30`, `request_timeout_seconds=30`, `initial_retry_delay_seconds=2`, `maximum_retry_delay_seconds=60`, `rate_limit_block_seconds=300`. The former `edmingle_config.json` was removed 2026-09-23 (it was always an empty `{}` — every run already used these same defaults).
+- **`notifications.yaml`** (central): email config. **`../notification_messages.yaml`** (this pipeline's folder): subject and body of each email.
+- **`DEFAULTS`** (built into `edmingle_export.py`; any key can be overridden in the optional `scripts/enrollments_reports_config.json`): `chunk_days=30`, `per_page=200`, `max_calls_per_minute=30`, `request_timeout_seconds=30`, `initial_retry_delay_seconds=2`, `maximum_retry_delay_seconds=60`, `rate_limit_block_seconds=300`. The former `edmingle_config.json` was removed 2026-09-23 (it was always an empty `{}` — every run already used these same defaults).
 
 ## 8. Data Transformation, Output & Schema
 
@@ -119,7 +119,7 @@ No `requirements.txt` exists in this folder — dependencies are documented in p
 ## 12. Setup & How to Run
 
 Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running:
-1. Fill in `../../credentials.yaml`; fill in `../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
+1. Fill in `../../credentials.yaml`; fill in `../../notifications.yaml` if email alerts are wanted (missing/disabled just logs a warning).
 2. **Dates are `DD-MM-YYYY`** — unlike every other pipeline (`YYYY-MM-DD`), because that is what Edmingle's endpoint expects.
 3. No watchdog: a crash means running the same command again (it skips the finished chunks). `--output` overrides the fixed default filename; the chunk folder and log are named after it.
 
@@ -160,7 +160,8 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 
 ## 16. Maintenance Guide
 
-- **Chunk size/rate limits/retry behavior** → the `DEFAULTS` dict in `edmingle_export.py` (no config file or CLI flag).
+- **Chunk size/rate limits/retry behavior** → `scripts/enrollments_reports_config.json` (the defaults live in the `DEFAULTS` dict in `edmingle_export.py`; no CLI flag).
+- **Email wording** → `../notification_messages.yaml`.
 - **Output columns** → `FIELDS` in `edmingle_constants.py`.
 - **Permanent vs. transient classification** → `common.get_json`'s `permanent` default.
 - **Investigate the unexplained large CSV** → check server access logs around 2026-09-24 00:24–00:25 UTC for any manual command that could have placed it there.
@@ -171,7 +172,7 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 
 ## 18. Security Considerations
 
-The API key is sent only in headers, never logged or printed. `../notifications.yaml` is `chmod 600`. Output CSVs contain student PII (name, email, phone, shipping details), so restrict access to `output/`; the script has no access control.
+The API key is sent only in headers, never logged or printed. `../../notifications.yaml` is `chmod 600`. Output CSVs contain student PII (name, email, phone, shipping details), so restrict access to `output/`; the script has no access control.
 
 ## 19. Raw API Payload (Captured Structure)
 

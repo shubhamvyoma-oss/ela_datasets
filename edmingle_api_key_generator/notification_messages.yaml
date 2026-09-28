@@ -1,0 +1,54 @@
+# =============================================================================
+# edmingle_api_key_generator -- notification_messages.yaml
+#
+# The WORDING of every email this pipeline sends. Who receives them, and the mail
+# login, are in ../notifications.yaml at the repo root (a secret; not on GitHub).
+#
+# HOW TO EDIT
+#   * Change any text you like. Each message has a `subject` and a `body`.
+#   * Words in {curly braces} are filled in by the pipeline when it sends the email
+#     (a row count, a date, an error). Keep them spelled EXACTLY as they are, and only
+#     use the ones already in that message.
+#   * Some have a format: {pct:.1f} = one decimal place, {rows:,} = thousands
+#     separators. Leave those as they are.
+#   * Multi-line text: start with |-  and indent every line the same amount.
+#   * `when` is just a note for people; the pipeline ignores it.
+#   * If this file is missing or a {placeholder} is misspelled, the pipeline does NOT
+#     stop: it sends a plain fallback email listing the raw values.
+# =============================================================================
+
+api_key_generated:
+  when: A new key was created (this email carries the key itself)
+  verified_line: "Verified     : the new key was accepted by Edmingle right after it was saved\n"
+  subject: "[Vyoma Edmingle] New API Key Generated"
+  body: |-
+    A new Edmingle API key was generated successfully.
+
+    Username     : {username}
+    Generated at : {generated_at}
+    API key      : {api_key}
+    {verified_line}
+
+rotation_skipped:
+  when: Not rotated because another pipeline was running
+  subject: "[Vyoma Edmingle] API key rotation SKIPPED"
+  body: |-
+    {error}
+
+    Nothing was changed.
+
+rotation_key_not_accepted:
+  when: The new key was saved but Edmingle refused it
+  subject: "[Vyoma Edmingle] API key rotation FAILED - new key not accepted"
+  body: |-
+    credentials.yaml WAS updated with the new key, but Edmingle did not accept it: {error}
+
+    The old key is already revoked, so pipelines will fail until this is fixed. The key was NOT emailed. Check credentials.yaml on the server and the Edmingle tutor login.
+
+rotation_failed:
+  when: The rotation failed before anything was changed
+  subject: "[Vyoma Edmingle] API key rotation FAILED"
+  body: |-
+    {error}
+
+    Nothing was changed.

@@ -38,10 +38,10 @@ flowchart TD
 
 | Path | Purpose |
 |---|---|
-| `scripts/edmingle_generate_api_key.py` | Entry point — loads its settings (`credentials.yaml` tutor login/base URL, `../notifications.yaml`), validates them, logs in, extracts/validates the key, writes it, checks it, and sends the emails through `common.send_mail`. |
+| `scripts/edmingle_generate_api_key.py` | Entry point — loads its settings (`credentials.yaml` tutor login/base URL, `../../notifications.yaml`), validates them, logs in, extracts/validates the key, writes it, checks it, and sends the emails through `common.send_mail`. |
 | `scripts/edmingle_credentials_writer.py` | The only code allowed to write `credentials.yaml` — targeted regex replace of the `api_key` line only. |
 | `scripts/edmingle_rotation_guard.py` | Refuses to rotate while another `ela_datasets` pipeline is running (reads `/proc`, Linux only). |
-| `../notifications.yaml` | This pipeline's own SMTP/recipient config (restricted permissions, not committed). |
+| `../../notifications.yaml`, `../notification_messages.yaml` | Central SMTP/recipient config, repo root (restricted permissions, not committed) and this pipeline's email wording, pipeline folder (committed). |
 | `scripts/run_generate_and_email_api_key.bat` | Windows launcher for the full real run. |
 | `scripts/test_edmingle_api_key_generator.py`, `test_credentials_writer.py`, `test_rotation_guard.py` | Offline unit tests (34 total). |
 | `output/README.md` | Placeholder — this pipeline produces no data output. |
@@ -77,9 +77,10 @@ flowchart TD
 - **CLI:** `--check-config` (validate only — no network/file/email); `--verify-only` (one read-only call to check the key now in `credentials.yaml` still works, changes nothing); `--force` (rotate even if other pipelines are running — they will fail with invalid credentials until restarted).
 - **Exit codes:** `0` done; `1` failed; `2` skipped because a pipeline is running (nothing changed).
 - **`../../credentials.yaml`:** `tutor_login.{login_url,username,password}` (read), `api_key` (rewritten).
-- **`notifications.yaml`:** SMTP host/port/from/app-password/timeout, `to_addresses`; Slack/Teams blocks present but disabled and unused.
+- **`notifications.yaml`** (central): SMTP host/port/from/app-password/timeout and the default `to_addresses`. **`../notification_messages.yaml`** (this pipeline's folder): subject and body of each email.
 - **`../../credentials.yaml` also needs** `base_url` (https) and `organization_id`, used only to check the new key.
-- **Hardcoded:** `REQUEST_TIMEOUT_SECONDS=30`; accepted key length 16–256 chars; key check = 3 attempts, 5s apart.
+- **`scripts/edmingle_api_key_generator_config.json`:** `request_timeout_seconds` (default 30). Optional — the default applies if the file is missing.
+- **Hardcoded:** accepted key length 16–256 chars; key check = 3 attempts, 5s apart.
 - Neither YAML file is committed to version control. No secret values appear in this document.
 
 ## 8. Data Transformation, Output & Schema
@@ -120,7 +121,7 @@ requirement before writing `credentials.yaml`, non-empty key before writing.
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: fill in `../../credentials.yaml`'s `tutor_login` block (a blank username/password forces a prompt) and `../notifications.yaml` (valid SMTP settings, at least one recipient). It also has its own `requirements.txt`, so it can run standalone (e.g. on Windows via `run_generate_and_email_api_key.bat`) as well as with the shared venv.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: fill in `../../credentials.yaml`'s `tutor_login` block (a blank username/password forces a prompt) and `../../notifications.yaml` (valid SMTP settings, at least one recipient). It also has its own `requirements.txt`, so it can run standalone (e.g. on Windows via `run_generate_and_email_api_key.bat`) as well as with the shared venv.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -144,7 +145,7 @@ Short manual utility, so there is no tmux section.
 
 - **Next runs:** 2026-10-25, 2026-11-25, 2026-12-25 (03:30 UTC each).
 - **If a pipeline is running,** nothing is rotated: exit code 2, the reason goes to `output/rotation.log`, and a "SKIPPED" notice is emailed. There is no retry until next month — rotate by hand once it finishes if needed sooner.
-- **Emails:** the new key (after it was saved *and* checked), or a "SKIPPED" / "FAILED" / "FAILED - new key not accepted" notice. Notices never contain the key and need `app_password` set in `../notifications.yaml` (a scheduled run has nobody to prompt).
+- **Emails:** the new key (after it was saved *and* checked), or a "SKIPPED" / "FAILED" / "FAILED - new key not accepted" notice. Notices never contain the key and need `app_password` set in `../../notifications.yaml` (a scheduled run has nobody to prompt).
 - **Not yet exercised end to end:** the guard, key check, notices and cron entry passed 34 unit tests plus `--verify-only` and the guard against the real process table, but no full scheduled rotation has run since they were added.
 
 ## 14. Important Business / Technical Rules
@@ -166,15 +167,15 @@ Short manual utility, so there is no tmux section.
 | `CredentialsUpdateError: could not find a single 'api_key' line` | `credentials.yaml`'s structure changed | Re-check the regex in `edmingle_credentials_writer.py`; re-run its tests |
 | Exit code 2, "Not rotating: these pipelines are running" | A pipeline (named in the message) is running | Wait for it to finish and run again; `--force` only if you accept it will fail |
 | "credentials.yaml WAS updated ... but Edmingle did not accept it" | Login worked but the new key is rejected | Old key is already revoked — check the tutor login and `credentials.yaml` on the server; `--verify-only` re-tests |
-| No email on the 25th | Cron didn't run, or the app password is blank/wrong | `output/rotation.log`; `crontab -l`; notices need `app_password` set in `../notifications.yaml` |
+| No email on the 25th | Cron didn't run, or the app password is blank/wrong | `output/rotation.log`; `crontab -l`; notices need `app_password` set in `../../notifications.yaml` |
 | Unexpected interactive prompt | The tutor username/password is blank in `credentials.yaml` | Populate it, or answer the prompt (the email app password is never prompted for: it must be set in `notifications.yaml`) |
 
 ## 16. Maintenance Guide
 
 - **Key length/format change** → the bounds check in `extract_api_key()`.
 - **Credentials write mechanism change** → `_API_KEY_LINE` regex and `update_shared_api_key()` in `edmingle_credentials_writer.py`; re-run its tests afterward.
-- **Email content/recipients** → `build_api_key_email()`, or `notifications.yaml`'s `to_addresses`.
-- **SMTP provider change** → `notifications.yaml`'s `channels.email.smtp` block, no code change.
+- **Email wording** → `../notification_messages.yaml`. **Recipients** → `notifications.yaml`'s `to_addresses`.
+- **SMTP provider change** → `notifications.yaml`'s `email.smtp` block, no code change.
 - **Change the schedule** → the `30 3 25 * *` line in `crontab -l` on the VPS (server clock is UTC; 03:30 UTC = 09:00 IST).
 - **New notification channel** → Slack/Teams blocks already exist as disabled placeholders, unread by any current code.
 

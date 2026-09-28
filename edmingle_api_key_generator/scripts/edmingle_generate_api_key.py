@@ -5,7 +5,7 @@ and email a notification -- without ever printing/logging the key itself.
 Exit codes: 0 done, 1 failed, 2 skipped because another pipeline is running (nothing changed).
 Scheduled monthly (25th, 09:00 IST) by cron; see ../EDMINGLE_API_KEY_GENERATOR.md.
 Settings: the tutor login and base URL come from ../../credentials.yaml, the SMTP settings and
-recipients from ../notifications.yaml (this pipeline's own folder).
+recipients from ../../notifications.yaml (the central file).
 """
 
 from __future__ import annotations
@@ -171,16 +171,13 @@ def build_api_key_email(
     verified: bool = False,
 ) -> tuple[str, str]:
     timestamp = (generated_at or datetime.now().astimezone()).astimezone()
-    lines = [
-        "A new Edmingle API key was generated successfully.",
-        "",
-        f"Username     : {username}",
-        f"Generated at : {timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        f"API key      : {api_key}",
-    ]
-    if verified:
-        lines.append("Verified     : the new key was accepted by Edmingle right after it was saved")
-    return "[Vyoma Edmingle] New API Key Generated", "\n".join([*lines, ""])
+    # Wording lives in ../notification_messages.yaml (api_key_generated).
+    verified_line = (common.message_field("edmingle_api_key_generator", "api_key_generated", "verified_line")
+                     if verified else "")
+    return common.render_message(
+        "edmingle_api_key_generator", "api_key_generated", username=username,
+        generated_at=timestamp.strftime("%Y-%m-%d %H:%M:%S %Z"), api_key=api_key, verified_line=verified_line,
+    )
 
 
 def send_api_key_email(api_key: str, username: str, verified: bool = False) -> None:
@@ -193,6 +190,11 @@ def send_api_key_email(api_key: str, username: str, verified: bool = False) -> N
 def send_notice_email(subject: str, body: str) -> None:
     """Status email for a skipped or failed rotation (best-effort, never raises). Must never contain the key."""
     common.send_mail(NOTIFICATIONS, subject, body)
+
+
+def send_notice(key: str, **values: Any) -> None:
+    """send_notice_email() with the wording of message `key` from ../notification_messages.yaml."""
+    send_notice_email(*common.render_message("edmingle_api_key_generator", key, **values))
 
 
 def parse_args() -> argparse.Namespace:
@@ -246,14 +248,12 @@ def main() -> int:
         return 0
     except RotationBlockedError as error:
         print(str(error), file=sys.stderr)
-        send_notice_email("[Vyoma Edmingle] API key rotation SKIPPED", f"{error}\n\nNothing was changed.")
+        send_notice("rotation_skipped", error=error)
         return 2
     except ApiKeyVerificationError as error:
         message = f"credentials.yaml WAS updated with the new key, but Edmingle did not accept it: {error}"
         print(message, file=sys.stderr)
-        send_notice_email("[Vyoma Edmingle] API key rotation FAILED - new key not accepted",
-                          f"{message}\n\nThe old key is already revoked, so pipelines will fail until this is fixed. "
-                          f"The key was NOT emailed. Check credentials.yaml on the server and the Edmingle tutor login.")
+        send_notice("rotation_key_not_accepted", error=error)
         return 1
     except (ApiKeyGenerationError, EmailDeliveryError, CredentialsUpdateError, ValueError) as error:
         if key_persisted:
@@ -265,7 +265,7 @@ def main() -> int:
         else:
             print(f"Failed safely: {error}", file=sys.stderr)
             if not (args.check_config or args.verify_only):
-                send_notice_email("[Vyoma Edmingle] API key rotation FAILED", f"{error}\n\nNothing was changed.")
+                send_notice("rotation_failed", error=error)
         return 1
 
 

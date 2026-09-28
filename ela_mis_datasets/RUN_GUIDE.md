@@ -6,7 +6,7 @@ Refreshes the student list, then pulls the full course/enrollment history for **
 
 ## Before you start
 - Make sure `credentials.yaml` (shared) has a working key.
-- `notifications.yaml` (this folder) **must** exist with real email settings — the script won't start without it.
+- The central `notifications.yaml` (repo root) **must** exist with real email settings — the script won't start without it.
 - Make sure there's at least 2 GB of free disk space (the script checks this itself and stops if there isn't).
 - Only run one pipeline at a time.
 - **Never press Ctrl+C** — it throws away an unfinished student-list refresh. To step away, detach instead: `Ctrl+B` then `D`.

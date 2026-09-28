@@ -3,7 +3,7 @@
 Downloads individual enrollment records for any date range you choose, in 30-day pieces (Edmingle rejects one huge request), then joins them into one file. Long ranges can take hours. Full technical detail: [ENROLLMENTS_REPORTS.md](ENROLLMENTS_REPORTS.md).
 
 ## Before you start
-- Make sure `credentials.yaml` (shared) has a working key. `notifications.yaml` (this folder) is optional.
+- Make sure `credentials.yaml` (shared) has a working key. the central `notifications.yaml` (repo root) is optional (no email is sent if it is missing).
 - `scripts/enrollments_reports_config.json` holds chunk size, speed, and retry settings — the defaults are fine.
 - **Dates here are `DD-MM-YYYY`** — every other pipeline uses `YYYY-MM-DD`, so watch out.
 - The result is **always saved as `output/edmingle_enrollment_report.csv`** and gets **overwritten** every time a run finishes. If you want to keep an older run's file, copy or rename it first.

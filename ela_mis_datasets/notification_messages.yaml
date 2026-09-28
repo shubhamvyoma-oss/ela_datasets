@@ -1,0 +1,101 @@
+# =============================================================================
+# ela_mis_datasets -- notification_messages.yaml
+#
+# The WORDING of every email this pipeline sends. Who receives them, and the mail
+# login, are in ../notifications.yaml at the repo root (a secret; not on GitHub).
+#
+# HOW TO EDIT
+#   * Change any text you like. Each message has a `subject` and a `body`.
+#   * Words in {curly braces} are filled in by the pipeline when it sends the email
+#     (a row count, a date, an error). Keep them spelled EXACTLY as they are, and only
+#     use the ones already in that message.
+#   * Some have a format: {pct:.1f} = one decimal place, {rows:,} = thousands
+#     separators. Leave those as they are.
+#   * Multi-line text: start with |-  and indent every line the same amount.
+#   * `when` is just a note for people; the pipeline ignores it.
+#   * If this file is missing or a {placeholder} is misspelled, the pipeline does NOT
+#     stop: it sends a plain fallback email listing the raw values.
+# =============================================================================
+
+startup_failed:
+  when: A check before the long run failed (disk too full, or the API key is bad)
+  subject: "[Vyoma Pipeline] STARTUP FAILED — {reason}"
+  body: |-
+    Script failed startup check.
+
+    {message}
+
+started:
+  when: The run has started
+  subject: "[Vyoma Pipeline] STARTED — Sync has begun"
+  body: |-
+    The Edmingle sync script has started successfully.
+
+    Time    : {time}
+    Server  : {server}
+    Est. time : {estimate}
+    You will receive a status update every {interval_hours:.1f} hours.
+
+status_update:
+  when: Every few hours while the long course pull is running
+  subject: "[Vyoma Pipeline] STATUS — {pct:.1f}% complete"
+  body: |-
+    Vyoma Edmingle sync is still running.
+
+    Progress  : {completed:,} / {total:,} students ({pct:.1f}%)
+    Elapsed   : {elapsed}
+    Remaining : ~{remaining}
+    Disk free : {free_gb:.1f} GB
+
+    No action needed — script is running normally.
+
+api_key_expired:
+  when: The API key stopped working in the middle of the run
+  subject: "[Vyoma Pipeline] STOPPED — API key expired during run"
+  body: |-
+    The script stopped because the API key expired mid-run.
+
+    Context : {context}
+    HTTP    : {status}
+
+    Action  : Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator
+              rotates it on the 25th; run edmingle_generate_api_key.py if it is stale).
+              Run the script again — it will resume from checkpoint.
+
+course_sync_completed:
+  when: A resumed run finished the course part
+  subject: "[Vyoma Pipeline] COMPLETED — Course sync finished"
+  body: |-
+    The Edmingle course enrollment sync has completed successfully.
+
+    Output file : edmingle_course_enrollments.csv
+    Check       : edmingle_sync.log for full details.
+
+full_sync_completed:
+  when: A full run (student list + courses) finished
+  subject: "[Vyoma Pipeline] COMPLETED — Full sync finished"
+  body: |-
+    The Edmingle full sync has completed successfully.
+
+    Output files:
+      edmingle_students.csv
+      edmingle_course_enrollments.csv
+
+    Check edmingle_sync.log for full run details.
+
+crashed:
+  when: The script crashed unexpectedly
+  subject: "[Vyoma Pipeline] FAILED — Script crashed"
+  body: |-
+    The Edmingle sync script has crashed.
+
+    Time    : {time}
+
+    Action  : Check edmingle_sync.log on the server for the error.
+
+    To resume:
+      1. SSH into the VPS
+      2. cd {script_dir}
+      3. tmux attach -t ela_mis_datasets
+      4. python3 edmingle_student_course_sync.py
+      The script will automatically resume from last checkpoint.

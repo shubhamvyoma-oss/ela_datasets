@@ -5,7 +5,7 @@ Pulls daily attendance from Edmingle (one call per day) and saves two files: one
 ## Before you start
 - Make sure `credentials.yaml` (shared) has a working API key.
 - Check `scripts/attendance_config.yaml` looks right — it holds the tuning settings.
-- Make sure `notifications.yaml` (this folder) has a real email address, or you won't get alerts.
+- Alert emails are set up centrally: who gets them is in `/home/projectdev/ela_datasets/notifications.yaml`, and the wording of each email is in `notification_messages.yaml` in this folder.
 - Only run one pipeline at a time.
 - There's a separate standalone copy of this pipeline at `/home/projectdev/attendance_dataset/` — it has its own environment and doesn't share progress with this one.
 

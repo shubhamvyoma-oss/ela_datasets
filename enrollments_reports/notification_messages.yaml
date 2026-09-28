@@ -1,0 +1,60 @@
+# =============================================================================
+# enrollments_reports -- notification_messages.yaml
+#
+# The WORDING of every email this pipeline sends. Who receives them, and the mail
+# login, are in ../notifications.yaml at the repo root (a secret; not on GitHub).
+#
+# HOW TO EDIT
+#   * Change any text you like. Each message has a `subject` and a `body`.
+#   * Words in {curly braces} are filled in by the pipeline when it sends the email
+#     (a row count, a date, an error). Keep them spelled EXACTLY as they are, and only
+#     use the ones already in that message.
+#   * Some have a format: {pct:.1f} = one decimal place, {rows:,} = thousands
+#     separators. Leave those as they are.
+#   * Multi-line text: start with |-  and indent every line the same amount.
+#   * `when` is just a note for people; the pipeline ignores it.
+#   * If this file is missing or a {placeholder} is misspelled, the pipeline does NOT
+#     stop: it sends a plain fallback email listing the raw values.
+# =============================================================================
+
+started:
+  when: A fresh export has started
+  subject: "Edmingle export started"
+  body: |
+    Started pulling enrollment data {start_date} -> {end_date} in {chunks} chunk(s) of {chunk_days} days each.
+    Output file: {output}
+
+resumed:
+  when: An interrupted export was started again and is skipping finished chunks
+  subject: "Edmingle export resumed"
+  body: |-
+    Resumed pulling enrollment data {start_date} -> {end_date} in {chunks} chunk(s) of {chunk_days} days each.
+    Output file: {output}
+    {done}/{chunks} chunks were already downloaded.
+
+completed:
+  when: The export finished
+  subject: "Edmingle export completed"
+  body: |-
+    Finished pulling enrollment data {start_date} -> {end_date} across {chunks} chunk(s) of {chunk_days} days each.
+    Rows written: {rows:,}
+    Output file: {output}
+
+failed_permanent:
+  when: Edmingle refused the request in a way retrying cannot fix (bad key, wrong org, changed endpoint)
+  subject: "Edmingle export FAILED (permanent error)"
+  body: |-
+    edmingle_export.py stopped and will not retry on its own: {error}
+
+    This is not a transient issue (bad credentials, wrong org id, or a wrong/changed endpoint) -- fix the underlying problem before re-running.
+    Check {log_path} on the VPS for the full detail.
+
+crashed:
+  when: The export crashed unexpectedly
+  subject: "Edmingle export CRASHED"
+  body: |-
+    edmingle_export.py crashed unexpectedly.
+
+    Check {log_path} on the VPS for the traceback.
+
+    To resume: SSH into the VPS, cd into this pipeline's scripts/ folder, and re-run the same command -- it skips the chunks already downloaded rather than starting over.

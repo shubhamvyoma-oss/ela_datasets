@@ -2,7 +2,7 @@
 
 ## 1. Overview & Purpose
 
-`Course_Batch_Merge.py` (`course_batch_merge/scripts/`) builds one master course/batch report by merging the Edmingle course catalogue with masterbatch data across **all three** batch statuses — Active, Archived, Completed. A single-file, single-run script (no CLI args, no config file): fetch, merge, apply business rules, write one CSV.
+`Course_Batch_Merge.py` (`course_batch_merge/scripts/`) builds one master course/batch report by merging the Edmingle course catalogue with masterbatch data across **all three** batch statuses — Active, Archived, Completed. A single-file, single-run script (no CLI args; an optional `scripts/course_batch_merge_config.json` sets only the request timeout): fetch, merge, apply business rules, write one CSV.
 
 **Purpose:** a Power-BI-ready, 41-column report including every batch regardless of status (unlike the `session_wise_attendance` catalogue builder, which uses different inclusion rules by design — the two are not expected to reconcile row-for-row).
 
@@ -76,7 +76,7 @@ Power BI report (see Section 8) — not automated or confirmed from this repo.
 | Source | Key(s) | Purpose |
 |---|---|---|
 | `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id`, `edmingle.base_url` | Auth and URLs for both endpoints. |
-| Hardcoded | `OUTPUT_COLUMNS` (41 columns), status map `{0,1,3}`, `page=1&per_page=1000` | All runtime behaviour — no config file, no CLI args. |
+| Hardcoded | `OUTPUT_COLUMNS` (41 columns), status map `{0,1,3}`, `page=1&per_page=1000` | All runtime behaviour except the request timeout (`scripts/course_batch_merge_config.json`, default 120 s, optional) — no CLI args. |
 
 ## 8. Data Transformation, Output & Schema
 
@@ -140,7 +140,7 @@ silently dropped; strict 41-column schema enforcement.
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`api_key`, `organization_id`, `institute_id`, `base_url` are all required). No config file, `input/` folder or notification setup needed. **The filename is capitalised** — `Course_Batch_Merge.py`; Linux is case-sensitive. No CLI arguments.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`api_key`, `organization_id`, `institute_id`, `base_url` are all required). No `input/` folder or notification setup needed (an optional `scripts/course_batch_merge_config.json` sets the request timeout). **The filename is capitalised** — `Course_Batch_Merge.py`; Linux is case-sensitive. No CLI arguments.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate

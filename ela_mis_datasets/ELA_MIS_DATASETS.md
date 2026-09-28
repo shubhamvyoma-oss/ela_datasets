@@ -34,7 +34,7 @@ repo consumes them programmatically.
 |---|---|
 | `scripts/edmingle_student_course_sync.py` | Entry point — startup checks, both syncs, checkpointing, logging, email. |
 | `scripts/edmingle_sync_config.json` | `overlap_pages`, `students_per_page`, `max_calls_per_minute`, retry/timeout settings, output filenames. |
-| `../notifications.yaml` | SMTP/recipient settings + `status_update_interval_hours` (this pipeline's own folder). |
+| `../../notifications.yaml`, `../notification_messages.yaml` | Central SMTP/recipient settings (its `pipelines: ela_mis_datasets:` block adds this pipeline's 3 recipients and `status_update_interval_hours`) (repo root) and, in this pipeline's folder, the wording of the 7 emails. |
 | `output/edmingle_students.csv` | Deduplicated roster (127,211 lines incl. header, last run 2026-08-24). |
 | `output/edmingle_course_enrollments.csv` | One row per class session per eligible student (529,225 lines incl. header, last run 2026-08-28). |
 | `output/edmingle_sync_state.json` | Checkpoint: last completed student page, course-refresh progress. |
@@ -136,7 +136,7 @@ Retry/permanent-error behaviour is as in Section 6. Any unhandled exception is l
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in; `../notifications.yaml` populated (a hard requirement here); `edmingle_sync_config.json` has all required keys; ≥2 GB free disk. A full run takes **68–80 hours** (~72 h for ~131,000 students), so run it in tmux — an SSH disconnect without it kills a multi-day run. Detach with `Ctrl+B` then `D`; avoid Ctrl+C (during the roster phase it discards the refresh, since nothing is saved until the roster's last page).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in; `../../notifications.yaml` populated (a hard requirement here); `edmingle_sync_config.json` has all required keys; ≥2 GB free disk. A full run takes **68–80 hours** (~72 h for ~131,000 students), so run it in tmux — an SSH disconnect without it kills a multi-day run. Detach with `Ctrl+B` then `D`; avoid Ctrl+C (during the roster phase it discards the refresh, since nothing is saved until the roster's last page).
 
 **Run it in tmux** (session name = folder name):
 
@@ -182,7 +182,8 @@ None — no cron/systemd/scheduler evidenced anywhere; triggered manually inside
 - **Pagination/rate limits** → `edmingle_sync_config.json`, no code change.
 - **Retry/backoff behavior** → same config file's delay/cooldown keys.
 - **Add/remove student custom fields** → `name_mapping` in `extract_student()` plus `STUDENT_FIELDS`.
-- **Email frequency** → `notifications.yaml`'s `status_update_interval_hours`.
+- **Email frequency** → `notifications.yaml`'s `pipelines: ela_mis_datasets: status_update_interval_hours`.
+- **Email wording** → `../notification_messages.yaml`.
 - **Output filenames** → the `files` map in the config (still resolves against `OUTPUT_DIR`).
 
 ## 17. Upstream & Downstream Dependencies
@@ -191,7 +192,7 @@ None — no cron/systemd/scheduler evidenced anywhere; triggered manually inside
 
 ## 18. Security Considerations
 
-The API key is only sent in headers, never logged or printed. SMTP credentials live in `../notifications.yaml` (not committed). Output CSVs contain student/parent PII (names, emails, phones), so restrict access to `output/`; the script has no access control. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
+The API key is only sent in headers, never logged or printed. SMTP credentials live in `../../notifications.yaml` (not committed). Output CSVs contain student/parent PII (names, emails, phones), so restrict access to `output/`; the script has no access control. `SCRIPT_FAILED.txt` and the log may include exception text but never the API key.
 
 ## 19. Raw API Payload (Captured Structure)
 

@@ -65,6 +65,12 @@ def send_mail(subject: str, body: str, logger: logging.Logger) -> None:
     common.send_mail(notifications, subject, body, logger)
 
 
+def send_message(key: str, logger: logging.Logger, **values) -> None:
+    # The wording of every email lives in ../notification_messages.yaml.
+    subject, body = common.render_message("enrollments_reports", key, logger, **values)
+    send_mail(subject, body, logger)
+
+
 def setup_logging(log_path: Path) -> logging.Logger:
     logging.basicConfig(
         level=logging.INFO,
@@ -173,14 +179,12 @@ class EdmingleExportRun:
         self.logger.info(f"{'Resuming' if is_resume else 'Starting'} enrollment export: {self.start_date} -> {self.end_date}")
         self.logger.info(f"Output: {self.output_path}  |  per_page={self.config['per_page']}  |  "
                          f"chunk_days={self.config['chunk_days']}  |  max_calls_per_minute={self.config['max_calls_per_minute']}")
-        send_mail(
-            subject=f"Edmingle export {'resumed' if is_resume else 'started'}",
-            body=(f"{'Resumed' if is_resume else 'Started'} pulling enrollment data {self.start_date} -> {self.end_date} "
-                  f"in {len(chunks)} chunk(s) of {self.config['chunk_days']} days each.\n"
-                  f"Output file: {self.output_path}\n"
-                  f"{f'{done}/{len(chunks)} chunks were already downloaded.' if is_resume else ''}"),
-            logger=self.logger,
-        )
+        run_details = dict(start_date=self.start_date, end_date=self.end_date, chunks=len(chunks),
+                           chunk_days=self.config["chunk_days"], output=self.output_path)
+        if is_resume:
+            send_message("resumed", self.logger, done=done, **run_details)
+        else:
+            send_message("started", self.logger, **run_details)
 
         run_started = time.monotonic()
         fetched = 0
@@ -214,14 +218,9 @@ class EdmingleExportRun:
         shutil.rmtree(self.chunk_dir)
 
         self.logger.info(f"Done. Wrote {total_rows:,} rows total to {self.output_path}")
-        send_mail(
-            subject="Edmingle export completed",
-            body=(f"Finished pulling enrollment data {self.start_date} -> {self.end_date} "
-                  f"across {len(chunks)} chunk(s) of {self.config['chunk_days']} days each.\n"
-                  f"Rows written: {total_rows:,}\n"
-                  f"Output file: {self.output_path}"),
-            logger=self.logger,
-        )
+        send_message("completed", self.logger, start_date=self.start_date, end_date=self.end_date,
+                     chunks=len(chunks), chunk_days=self.config["chunk_days"], rows=total_rows,
+                     output=self.output_path)
 
 
 def parse_args():
@@ -252,29 +251,14 @@ def main() -> int:
         # Already logged with full detail inside fetch_page. Retrying won't help (bad credentials,
         # wrong org id, wrong endpoint) -- stop and notify immediately rather than retrying blindly.
         run.logger.error("Edmingle export stopped: permanent API error")
-        send_mail(
-            subject="Edmingle export FAILED (permanent error)",
-            body=(f"edmingle_export.py stopped and will not retry on its own: {exc}\n\n"
-                  f"This is not a transient issue (bad credentials, wrong org id, or a "
-                  f"wrong/changed endpoint) -- fix the underlying problem before re-running.\n"
-                  f"Check {run.log_path} on the VPS for the full detail."),
-            logger=run.logger,
-        )
+        send_message("failed_permanent", run.logger, error=exc, log_path=run.log_path)
         return 1
     except KeyboardInterrupt:
         run.logger.warning("Run interrupted; the next run will skip the chunks already downloaded.")
         return 130
     except Exception:
         run.logger.exception("Edmingle export run failed")
-        send_mail(
-            subject="Edmingle export CRASHED",
-            body=(f"edmingle_export.py crashed unexpectedly.\n\n"
-                  f"Check {run.log_path} on the VPS for the traceback.\n\n"
-                  f"To resume: SSH into the VPS, cd into this pipeline's scripts/ folder, and "
-                  f"re-run the same command -- it skips the chunks already downloaded "
-                  f"rather than starting over."),
-            logger=run.logger,
-        )
+        send_message("crashed", run.logger, log_path=run.log_path)
         return 1
     return 0
 

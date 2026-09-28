@@ -43,6 +43,7 @@ The venv already has every dependency. See **[RUN_GUIDE.md](RUN_GUIDE.md)** for 
 ```
 ela_datasets/
 ├── credentials.yaml        # shared Edmingle API key/org id/institute id (gitignored)
+├── notifications.yaml      # ONE central file: email login + recipients for every pipeline (gitignored)
 ├── common.py                # shared helpers: Edmingle settings, credentials/notifications, SMTP, rate limiter
 ├── .venv/                   # shared Python environment (gitignored)
 ├── docker/                  # alternative containerized runtime
@@ -51,8 +52,8 @@ ela_datasets/
 └── <pipeline>/
     ├── RUN_GUIDE.md          # step-by-step run guide (+ tmux for long runs)
     ├── <PIPELINE>.md         # that pipeline's full technical documentation
-    ├── notifications.yaml    # that pipeline's own SMTP/recipient config (gitignored)
-    ├── scripts/              # the pipeline's code (+ its own config.yaml/*.json, if any)
+    ├── notification_messages.yaml # wording of that pipeline's emails (only pipelines that send email; committed)
+    ├── scripts/              # the pipeline's code + its own <name>_config.json/.yaml (tuning knobs)
     └── output/               # everything generated at runtime (gitignored)
 ```
 
@@ -80,13 +81,15 @@ ela_datasets/
 | File | Scope | Committed? |
 |---|---|---|
 | `credentials.yaml` | Shared Edmingle API key/org id/institute id/tutor login | No — gitignored |
-| `<pipeline>/notifications.yaml` | That pipeline's own SMTP settings + recipients | No — gitignored, `chmod 600` |
-| `<pipeline>/scripts/config.yaml` or `*.json` | That pipeline's own runtime tuning (only where genuinely needed) | No — gitignored |
+| `notifications.yaml` (repo root) | The one email login (SMTP) + default recipients for every pipeline, with an optional `pipelines:` block per pipeline (own recipients, on/off switches) | No — gitignored, `chmod 600` |
+| `<pipeline>/notification_messages.yaml` | The wording (subject + body, with `{placeholders}`) of that pipeline's emails; only the 5 pipelines that send email have one. No secrets | **Yes** — committed |
+| `<pipeline>/scripts/<name>_config.json` (attendance: `attendance_config.yaml`) | That pipeline's own tuning knobs: timeouts, retries, rate limits, chunk sizes. No secrets. Every pipeline has one. `attendance`, `country_wise_data` and `ela_mis_datasets` **require** theirs (they exit if it is missing); the other five fall back to built-in defaults | **Yes** — committed |
 | `NOTIFICATIONS.md` | Local index mirroring real recipient addresses | No — gitignored |
 
-No pipeline hardcodes a secret in its own source — every credential is loaded from one of the
-files above at runtime. Never commit any of them; `.gitignore` already excludes all of the above
-by pattern (`**/notifications.yaml`, `**/input/`, etc.).
+No pipeline hardcodes a secret in its own source — every credential is loaded from `credentials.yaml`
+or the central `notifications.yaml` at runtime. Never commit those; `.gitignore` already excludes them by pattern
+(`credentials.yaml`, `**/notifications.yaml`, `**/input/`, etc.). The `*_config.json` files hold no
+secrets and are committed on purpose.
 
 ## What's intentionally not shared
 
@@ -94,8 +97,9 @@ by pattern (`**/notifications.yaml`, `**/input/`, etc.).
   course/batch catalogue, but use different inclusion rules (Archived batches, exclusion
   mechanism, latest-batch tie-break) — documented as intentionally divergent in each pipeline's
   own doc, not a duplication to merge.
-- Each pipeline's `notifications.yaml` is a separate file with its own recipients/thresholds —
-  intentionally not centralized, since who gets alerted genuinely differs per pipeline.
+- Recipients can still differ per pipeline: the central `notifications.yaml` holds a default list, and its
+  `pipelines:` block can give one pipeline its own recipients or switches (`ela_mis_datasets` emails 3 people,
+  the others 2).
 - `experiments/` (out of scope for this repo; see `.gitignore`).
 
 ## Conventions for changes
@@ -103,4 +107,4 @@ by pattern (`**/notifications.yaml`, `**/input/`, etc.).
 - Prefer stdlib/pandas-native operations over hand-rolled index loops; verify behaviour-preserving cleanups by diffing live output before and after.
 - Comments explain *why*, not *what*; keep the ones that record a non-obvious fact (an API quirk, a fixed bug, a deliberate tradeoff).
 - Never invent data, row counts or endpoint behaviour in documentation — mark anything unverified `[TO CONFIRM]`.
-- Don't add a config file, notification channel or abstraction a pipeline doesn't need; zero config beyond `credentials.yaml` is correct for several of them.
+- Put a new tuning value in the pipeline's own config file (with the old value as its built-in default) instead of hardcoding it in the script; never put a secret there.

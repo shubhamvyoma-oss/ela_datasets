@@ -56,7 +56,7 @@ flowchart TD
 | Source | Key(s) | Purpose |
 |---|---|---|
 | `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id`, `edmingle.institute_id`, `edmingle.base_url` | Auth and URL for the catalogue call. |
-| Hardcoded | `OUTPUT_FILE` only — no organization id, institute id or base URL is written into the script (fixed 2026-09-25) | All runtime behaviour — no config file, no CLI args. |
+| Hardcoded | `OUTPUT_FILE` only — no organization id, institute id or base URL is written into the script (fixed 2026-09-25) | All runtime behaviour except the request timeout (`scripts/course_catalogue_data_config.json`, default 120 s, optional) — no CLI args. |
 
 ## 8. Data Transformation, Output & Schema
 
@@ -128,7 +128,7 @@ File saved at: /app/course_catalogue_data/scripts/../output/course_catalogue_dat
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). The VPS's system Python has no `pandas` (and no `python3-venv`/sudo), so use the existing virtualenv (how it was built is in the repo-root `RUN_GUIDE.md`). Populate `../../credentials.yaml` first; no config file, `input/` or notifications needed, and no CLI arguments.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). The VPS's system Python has no `pandas` (and no `python3-venv`/sudo), so use the existing virtualenv (how it was built is in the repo-root `RUN_GUIDE.md`). Populate `../../credentials.yaml` first; no `input/` or notifications needed (an optional `scripts/course_catalogue_data_config.json` sets the request timeout), and no CLI arguments.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate

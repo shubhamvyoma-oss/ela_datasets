@@ -47,7 +47,7 @@ automatically.
 |---|---|
 | `scripts/attendance.py` | Entire pipeline — config, extraction, cleaning, summarization, email, CLI (`main()`). |
 | `scripts/attendance_config.yaml` | Non-secret runtime config (API tuning, paths, behaviour flags). |
-| `../notifications.yaml` | SMTP + recipients + alert-granularity toggles (this pipeline's own folder, a sibling of `scripts/`). |
+| `../../notifications.yaml`, `../notification_messages.yaml` | Central SMTP + recipients (its `pipelines: attendance:` block holds the alert-granularity toggles) and the wording of the 6 emails. |
 | `output/` | Summaries, `staging/` (the resume state), `logs/`, the lock file, and a temporary `_spill/` folder while summarising (deleted afterwards). |
 | `../../credentials.yaml` | Shared Edmingle `api_key`/`organization_id`. |
 | `../../common.py` | Shared credentials/notifications loader — not used for this pipeline's own SMTP/rate-limit code. |
@@ -95,7 +95,8 @@ automatically.
 |---|---|---|
 | CLI | `--config` (cwd-relative, not script-relative), `--date`, `--from`/`--to`, `--from-file`, `--dry-run`, `--verbose` | Which dates, which mode. |
 | `../../credentials.yaml` | `edmingle.api_key`, `edmingle.organization_id` | Auth — fatal if missing. |
-| `notifications.yaml` | SMTP host/port/user/password, recipients, per-severity toggles; Slack/Teams placeholders (unimplemented) | Alerting. |
+| `notifications.yaml` (central) | SMTP host/port/user/password, default recipients, and this pipeline's per-severity toggles under `pipelines: attendance:` | Alerting. |
+| `../notification_messages.yaml` | Subject and body of each email, plus each one's level and subject length cap | Alert wording. |
 | `attendance_config.yaml` | `api.*` (url/timeouts/retry tuning), `paths.*`, `pipeline.*` (lookback, present/absent/late values, session id column, date/time formats, active-student filtering) | Runtime behaviour. |
 | Hardcoded | `VERSION`, IST offset, `OUTPUT_COLUMNS`, `SESSION_OUTPUT_COLUMNS`, extra "marked" codes `E`/`OL`/`NA` | Fixed schema/constants. |
 
@@ -154,7 +155,7 @@ session-id fallback with warning, zero-rating handling, disk-space precheck, ato
 - `total_classes_remaining` is effectively always 0 — `report_type=55` only reports past sessions.
 - No range/outlier checks (e.g. `attendance_percentage` > 100 wouldn't be caught).
 - `--config` default resolves against the caller's cwd, not the script folder — fails if run from elsewhere without an explicit path.
-- `notifications.yaml` still has placeholder SMTP credentials/recipients with alerts enabled — no real email will arrive until filled in.
+- Alert emails use the central `notifications.yaml` sender and default recipients, so since 2026-09-28 they really are sent (before that this pipeline had placeholder addresses and nothing arrived). `notify_on_completion: true` means one email per successful run.
 - **Memory (fixed 2026-09-25).** The pipeline used to load every staging file into one DataFrame; the 2020-01-01 → 2026-08-31 run (2,260 days, ~5.6 GB, ~10M rows) died at that step on this 3.9 GB server. It now uses ~330 MB regardless of range (measured on 649k rows) but needs about **half the staging size in free disk** for temporary files (checked up front). Only a ~4-month sample has been tested end to end, so a full 2,260-day run is still unproven.
 - `cleanup_staging_after_combine` now removes staging files after the summaries are written (it used to remove them first). `clean_data()` log lines repeat once per partition on a large run, and the combined raw CSV is written file by file, so a column's number format can differ slightly (`5` vs `5.0`).
 - **Simplified 2026-09-25:** the JSON checkpoint (`--retry-failed`, `--reset-checkpoint`), the internet-outage probe/wait, the startup API validation call and the HTML mailer were removed. Consequences: a long internet outage now fails those dates (and trips the circuit breaker after 3) instead of pausing the run — re-run the same command afterwards; a dry run no longer leaves simulated rows in `staging/` (they used to be recorded as finished days).
@@ -181,7 +182,7 @@ Docstring states: `pip install pandas requests pyyaml`.
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in, `attendance_config.yaml` flags checked (`exclude_inactive_students` is `false` here), `../notifications.yaml` filled in if email is wanted (currently placeholders).
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in, `attendance_config.yaml` flags checked (`exclude_inactive_students` is `false` here), `../../notifications.yaml` filled in if email is wanted (currently placeholders).
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -241,11 +242,11 @@ None — triggered manually. No unattended auto-restart wrapper exists (a stale 
 - **New/renamed status codes** → `pipeline.present_value`/`absent_value`/`late_value`; the hardcoded `E`/`OL`/`NA` codes live in `build_class_summary()` itself.
 - **Output schema change** → `OUTPUT_COLUMNS`/`SESSION_OUTPUT_COLUMNS` plus the summary-building functions.
 - **Retry/backoff tuning** → `attendance_config.yaml api.*`, no code change needed.
-- **New notification channel** → `notifications.yaml` has Slack/Teams placeholders, but `notify()` only sends email.
+- **Email wording** → `../notification_messages.yaml`. **New notification channel** → `notify()` only sends email, so a channel would need code first.
 
 ## 17. Security Considerations
 
-`credentials.yaml`/`../notifications.yaml` hold secrets and are gitignored (`chmod 600`).
+`credentials.yaml`/`../../notifications.yaml` hold secrets and are gitignored (`chmod 600`).
 The API key is masked in at least one log line (not exhaustively checked elsewhere).
 Alert emails carry operational details only — no individual-student PII in the output CSVs.
 

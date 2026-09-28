@@ -3,7 +3,7 @@
 # =============================================================
 #
 # Edmingle credentials, organization id and base URL live in the shared ../../credentials.yaml;
-# email/SMTP settings live in ../notifications.yaml (this pipeline's own folder). This file holds
+# email/SMTP settings live in the central ../../notifications.yaml (wording: ../notification_messages.yaml). This file holds
 # only request, path and behaviour settings.
 #
 # USAGE: attendance.py reads config.yaml from the current folder by default (run it from scripts/);

@@ -6,10 +6,10 @@ that existed as 3-7 near-identical copies across pipeline folders:
 credentials loading, notification-settings loading, SMTP email sending, a
 rolling-window rate limiter, and crash-safe atomic file writes.
 
-Each pipeline keeps its own notifications.yaml (recipients/thresholds genuinely differ per
-pipeline) in that pipeline's own root folder (e.g. attendance/notifications.yaml) -- a sibling of
-its scripts/ and output/ folders, not inside scripts/ itself, and not shared with other pipelines.
-See NOTIFICATIONS.md at the repo root for a one-page index of which pipeline emails whom.
+Email settings live in ONE central file, ela_datasets/notifications.yaml (sender login + default
+recipients, plus optional per-pipeline overrides); the wording of each email lives in
+<pipeline>/notification_messages.yaml (only pipelines that send email have one). See NOTIFICATIONS.md at
+the repo root for who gets emailed by what.
 
 Every pipeline is one directory below the repo root (e.g.
 enrollments_reports/scripts/edmingle_export.py), so `from pathlib import
@@ -81,24 +81,82 @@ def auth_headers(api_key: str, org_id: str | int) -> dict:
     return {"apikey": str(api_key), "orgid": str(org_id), "ORGID": str(org_id)}
 
 
+NOTIFICATIONS_PATH = REPO_ROOT / "notifications.yaml"
+
+
 def load_notifications(pipeline_name: str) -> dict:
-    """Load <pipeline_name>/notifications.yaml from the repo root (that pipeline's own folder,
-    a sibling of its scripts/ and output/ folders). Returns {} if the file is missing, matching
-    every pipeline's existing behavior of treating a missing notifications file as "notifications
-    disabled", not an error (some callers layer their own hard-fail check on top before calling
-    this, when they want a missing file to be fatal instead)."""
-    p = REPO_ROOT / pipeline_name / "notifications.yaml"
-    if not p.exists():
+    """One pipeline's email settings, from the central ela_datasets/notifications.yaml, in the shape
+    every pipeline reads: {"channels": {"email": {"enabled", "smtp": {...}, "to_addresses": [...],
+    ...}}}. The central `email:` block is the default; a `pipelines: <pipeline_name>:` block replaces
+    or adds keys (its own recipients, notify_on_* switches, ...). Returns {} if the file (or its
+    `email:` block) is missing, meaning "notifications disabled", not an error (some callers layer
+    their own hard-fail check on top, using NOTIFICATIONS_PATH, when they want a missing file to be fatal)."""
+    if not NOTIFICATIONS_PATH.exists():
         return {}
-    with open(p, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    with open(NOTIFICATIONS_PATH, encoding="utf-8") as f:
+        central = yaml.safe_load(f) or {}
+    email = dict(central.get("email") or {})
+    if not email:
+        return {}
+    email["smtp"] = dict(email.get("smtp") or {})
+    email.update((central.get("pipelines") or {}).get(pipeline_name) or {})
+    return {"channels": {"email": email}}
+
+
+# ------------------------------------------------------------ message wording
+
+def messages_path(pipeline: str) -> Path:
+    """<pipeline>/notification_messages.yaml -- the wording of that pipeline's emails."""
+    return REPO_ROOT / pipeline / "notification_messages.yaml"
+
+
+def _message_entry(pipeline: str, key: str) -> dict | None:
+    """One message's entry from the pipeline's notification_messages.yaml, or None if the file or entry is
+    missing/broken."""
+    try:
+        with open(messages_path(pipeline), encoding="utf-8") as f:
+            entry = (yaml.safe_load(f) or {}).get(key)
+        return entry if isinstance(entry, dict) else None
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def message_field(pipeline: str, key: str, field: str, default: str = "") -> str:
+    """An extra text field of a message (e.g. its `level`, or a fragment like `verified_line`)."""
+    return (_message_entry(pipeline, key) or {}).get(field, default)
+
+
+def format_details(details: dict) -> str:
+    """A dict as 'key: value' lines -- the variable part of run summaries, which the message template
+    places wherever it says {details}."""
+    return "\n".join(f"{key}: {value}" for key, value in details.items())
+
+
+def render_message(pipeline: str, key: str, logger: logging.Logger | None = None, **values) -> tuple[str, str]:
+    """(subject, body) for one email, from the wording in <pipeline>/notification_messages.yaml with {placeholders}
+    filled from `values`. Never raises: if the file, the message or a placeholder is missing/misspelled,
+    it logs a warning and returns a plain fallback listing the raw values, so a wording problem can never
+    stop a pipeline or stop an email (including the API-key email) from being sent."""
+    log = logger or logging.getLogger(__name__)
+    entry = _message_entry(pipeline, key)
+    try:
+        if entry is None:
+            raise KeyError(f"no message {key!r} in {messages_path(pipeline)}")
+        subject = str(entry["subject"]).format(**values)
+        body = str(entry["body"]).format(**values)
+        if entry.get("subject_max"):
+            subject = subject[: int(entry["subject_max"])]
+        return subject, body
+    except Exception as exc:  # deliberately broad: see docstring
+        log.warning(f"Using fallback wording for {pipeline}.{key}: {exc!r}")
+        return f"[{pipeline}] {key}", format_details(values) or key
 
 
 # ------------------------------------------------------------------- email
 
 def send_mail(notifications: dict, subject: str, body: str,
               logger: logging.Logger | None = None) -> bool:
-    """Send a plain-text email per a loaded notifications.yaml's
+    """Send a plain-text email per a load_notifications() result's
     channels.email block. Best-effort: returns False and logs a warning
     instead of raising, matching every pipeline's existing "never let a
     notification failure fail the run" behavior.

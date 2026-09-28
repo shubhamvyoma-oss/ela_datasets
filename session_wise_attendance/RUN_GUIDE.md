@@ -5,7 +5,7 @@ Attendance for every individual class session. Edmingle can't hand this over dir
 ## Before you start
 - Make sure `credentials.yaml` (shared) has `api_key`, `organization_id`, and `institute_id`.
 - `scripts/session_wise_attendance_config.json` holds the speed limit and request timeout, shared by all 3 stages — the defaults are fine.
-- Check `notifications.yaml` (this folder) has the right email address for the run report.
+- The run report goes to the recipients in the central `notifications.yaml` (repo root).
 - Always run the 3 stages **in order** — each one reads the file the last one made.
 - Stage 3 dates are `YYYY-MM-DD`.
 - Only run one pipeline at a time.

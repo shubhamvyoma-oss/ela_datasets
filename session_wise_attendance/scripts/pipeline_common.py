@@ -1,6 +1,6 @@
 """
 pipeline_common.py -- shared helpers for this pipeline's 3 network-calling scripts: config
-loading (credentials.yaml + this pipeline's notifications.yaml + this pipeline's own
+loading (credentials.yaml + the central notifications.yaml + this pipeline's own
 session_wise_attendance_config.json), HTTP 429 backoff parsing, output-folder resolution,
 rate-limit spacing, per-run file logging, and the end-of-run email report. Credential/
 notification reading and SMTP sending delegate to ela_datasets/common.py.
@@ -61,7 +61,7 @@ def require_config(config: dict, key: str):
 
 def load_config(script_dir: Path) -> dict:
     """Builds the config dict from the shared ../../credentials.yaml and this pipeline's own
-    ../notifications.yaml. Rate-limit/timeout tuning lives separately in PIPELINE_CONFIG
+    ../../notifications.yaml. Rate-limit/timeout tuning lives separately in PIPELINE_CONFIG
     (see load_pipeline_config()), not in this dict."""
     config: dict = {}
     _merge_credentials(config, script_dir)
@@ -87,7 +87,7 @@ def _merge_credentials(config: dict, script_dir: Path) -> None:
 
 
 def _merge_notifications(config: dict) -> None:
-    """Puts this pipeline's SMTP settings and recipients (from its own notifications.yaml) onto
+    """Puts this pipeline's SMTP settings and recipients (from the central notifications.yaml) onto
     config["smtp"] in the flat shape send_run_report() checks, and keeps the raw notifications dict on
     config["_notifications"] for common.send_mail(). A missing file means notifications are off."""
     notifications = common.load_notifications("session_wise_attendance")
@@ -281,13 +281,15 @@ def send_run_report(stage_name: str, summary: dict, config: dict):
         print(f"[WARN] Email report skipped for {stage_name}: no smtp config / to_addresses in notifications.yaml")
         return
 
-    lines = [f"Vyoma attendance pipeline - {stage_name} run report", ""]
-    for key, value in summary.items():
-        lines.append(f"{key}: {value}")
-    body = "\n".join(lines)
-
-    status = "SUCCESS" if not summary.get("errors") else "COMPLETED WITH ERRORS"
-    subject = f"[Vyoma Pipeline] {stage_name} - {status} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+    # Wording lives in ../notification_messages.yaml (run_report).
+    status = common.message_field(
+        "session_wise_attendance", "run_report",
+        "status_with_errors" if summary.get("errors") else "status_success",
+    )
+    subject, body = common.render_message(
+        "session_wise_attendance", "run_report", PrintLogger(), stage_name=stage_name, status=status,
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"), details=common.format_details(summary),
+    )
 
     notifications = config.get("_notifications") or {}
     common.send_mail(notifications, subject, body, PrintLogger())

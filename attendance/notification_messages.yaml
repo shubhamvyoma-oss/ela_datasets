@@ -1,0 +1,80 @@
+# =============================================================================
+# attendance -- notification_messages.yaml
+#
+# The WORDING of every email this pipeline sends. Who receives them, and the mail
+# login, are in ../notifications.yaml at the repo root (a secret; not on GitHub).
+#
+# HOW TO EDIT
+#   * Change any text you like. Each message has a `subject` and a `body`.
+#   * Words in {curly braces} are filled in by the pipeline when it sends the email
+#     (a row count, a date, an error). Keep them spelled EXACTLY as they are, and only
+#     use the ones already in that message.
+#   * Some have a format: {pct:.1f} = one decimal place, {rows:,} = thousands
+#     separators. Leave those as they are.
+#   * Multi-line text: start with |-  and indent every line the same amount.
+#   * `when` is just a note for people; the pipeline ignores it.
+#   * If this file is missing or a {placeholder} is misspelled, the pipeline does NOT
+#     stop: it sends a plain fallback email listing the raw values.
+#
+# `level` (critical / warning / completion) is the on/off switch in ../notifications.yaml
+# (pipelines: attendance:). `subject_max` cuts the subject to that many characters, so a
+# very long error message cannot flood the subject line.
+# =============================================================================
+
+fatal_api_error:
+  when: Edmingle rejects the request with an error retrying cannot fix (bad key, wrong endpoint)
+  level: critical
+  subject_max: 112
+  subject: "[CRITICAL] Edmingle Pipeline -- {error}"
+  body: |-
+    Error: {error}
+    Date: {date}
+    Progress: {done}/{total} dates completed
+    Action: Fix attendance_config.yaml / credentials.yaml and re-run (finished days are kept; the run will resume).
+
+date_failed:
+  when: One day could not be fetched after all retries (sent only if notify_on_warning is true)
+  level: warning
+  subject_max: 111
+  subject: "[WARNING] Edmingle Pipeline -- Date {date} failed after all retries"
+  body: |-
+    Consecutive failures: {consecutive}
+    Max allowed: {max_allowed}
+
+circuit_breaker:
+  when: Too many days in a row failed, so the whole pull stops
+  level: critical
+  subject_max: 112
+  subject: "[CRITICAL] Edmingle Pipeline -- {error}"
+  body: |-
+    Error: {error}
+    Last failed date: {date}
+    Progress: {done}/{total} dates
+    Action: Fix the issue and re-run (finished days are kept).
+
+run_complete:
+  when: The run finished successfully (the run summary lines are added automatically)
+  level: completion
+  subject_max: 111
+  subject: "[SUCCESS] Edmingle Pipeline -- Run Complete"
+  body: |-
+    {details}
+
+pipeline_error:
+  when: The run stopped on a known pipeline error (for example, not enough disk space)
+  level: critical
+  subject_max: 112
+  subject: "[CRITICAL] Edmingle Pipeline -- {error}"
+  body: |-
+    Error: {error}
+    Elapsed: {elapsed_minutes:.1f} min
+
+unexpected_error:
+  when: The run crashed with an error nobody planned for
+  level: critical
+  subject_max: 112
+  subject: "[CRITICAL] Edmingle Pipeline -- Unexpected error: {error}"
+  body: |-
+    Error: Unexpected error: {error}
+    Traceback: {traceback}
+    Elapsed: {elapsed_minutes:.1f} min

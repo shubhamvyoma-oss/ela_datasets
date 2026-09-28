@@ -52,3 +52,4 @@ A few of these take hours. If you close your terminal, a normal command stops �
 - `enrollments_reports` wants dates as `DD-MM-YYYY`. Everything else wants `YYYY-MM-DD`.
 - `country_wise_data` and `session_wise_attendance` each run in **stages, in order** — don't skip ahead.
 - If the API key ever expires (you'll see 401/403 errors), run `edmingle_api_key_generator` first, then retry.
+- Emails: who receives them and the sender login are in `notifications.yaml` (repo root; it holds a password, so it is not on GitHub). What each email says is in `notification_messages.yaml` inside that pipeline's own folder — plain text you can edit.

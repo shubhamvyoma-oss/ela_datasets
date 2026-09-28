@@ -49,11 +49,10 @@ OUTPUT_DIR = (SCRIPT_DIR / ".." / "output").resolve()
 
 
 def _load_notifications_config() -> dict[str, Any]:
-    # Reads ela_mis_datasets/notifications.yaml. A missing file is a hard failure for this script
+    # Reads the central notifications.yaml. A missing file is a hard failure for this script
     # (common.load_notifications() alone would treat it as "notifications disabled").
-    notifications_path = common.REPO_ROOT / "ela_mis_datasets" / "notifications.yaml"
-    if not notifications_path.exists():
-        raise FileNotFoundError(f"Notifications file not found: {notifications_path}")
+    if not common.NOTIFICATIONS_PATH.exists():
+        raise FileNotFoundError(f"Notifications file not found: {common.NOTIFICATIONS_PATH}")
     return common.load_notifications("ela_mis_datasets")
 
 
@@ -63,7 +62,7 @@ _smtp_config = _email_config.get("smtp", {}) or {}
 
 
 # Periodic status-email interval during the course pull, from notifications.yaml's
-# channels.email.status_update_interval_hours (default 6h), converted to seconds.
+# pipelines.ela_mis_datasets.status_update_interval_hours (default 6h), converted to seconds.
 STATUS_UPDATE_INTERVAL = int(
     float(_email_config.get("status_update_interval_hours", 6)) * 3600
 )
@@ -157,6 +156,11 @@ def send_email_alert(subject: str, body: str) -> None:
     common.send_mail(_notifications_config, subject, body, logger)
 
 
+def _send_message(key: str, **values: Any) -> None:
+    # The wording of every email lives in ../notification_messages.yaml.
+    send_email_alert(*common.render_message("ela_mis_datasets", key, **values))
+
+
 def _roster_row_count() -> int:
     path = OUTPUT_DIR / DEFAULT_FILES["student_master"]
     if not path.exists():
@@ -167,7 +171,7 @@ def _roster_row_count() -> int:
 
 def _fail_startup(subject: str, message: str) -> None:
     print(f"STARTUP FAILED -- {message}")
-    send_email_alert(f"[Vyoma Pipeline] STARTUP FAILED — {subject}", f"Script failed startup check.\n\n{message}")
+    _send_message("startup_failed", reason=subject, message=message)
     sys.exit(1)
 
 
@@ -346,15 +350,7 @@ class EdmingleSync:
             self.logger.error(str(error))
             # Alert immediately if the API key expired mid-run -- the most common permanent error
             if error.status == 401:
-                send_email_alert(
-                    "[Vyoma Pipeline] STOPPED — API key expired during run",
-                    f"The script stopped because the API key expired mid-run.\n\n"
-                    f"Context : {context}\n"
-                    f"HTTP    : {error.status}\n\n"
-                    f"Action  : Check edmingle.api_key in credentials.yaml (edmingle_api_key_generator\n"
-                    f"          rotates it on the 25th; run edmingle_generate_api_key.py if it is stale).\n"
-                    f"          Run the script again — it will resume from checkpoint."
-                )
+                _send_message("api_key_expired", context=context, status=error.status)
             raise
 
     def sync_students(self, state: dict[str, Any]) -> None:
@@ -531,14 +527,10 @@ class EdmingleSync:
                     free_gb         = shutil.disk_usage(SCRIPT_DIR).free / (1024 ** 3)
                     avg_sec         = active_elapsed / completed if completed > 0 else 0
                     est_remaining   = avg_sec * (len(users) - completed)
-                    send_email_alert(
-                        f"[Vyoma Pipeline] STATUS — {pct:.1f}% complete",
-                        f"Vyoma Edmingle sync is still running.\n\n"
-                        f"Progress  : {completed:,} / {len(users):,} students ({pct:.1f}%)\n"
-                        f"Elapsed   : {format_duration(active_elapsed)}\n"
-                        f"Remaining : ~{format_duration(est_remaining)}\n"
-                        f"Disk free : {free_gb:.1f} GB\n\n"
-                        f"No action needed — script is running normally."
+                    _send_message(
+                        "status_update", pct=pct, completed=completed, total=len(users),
+                        elapsed=format_duration(active_elapsed), remaining=format_duration(est_remaining),
+                        free_gb=free_gb,
                     )
                     # Save timestamp so next update fires STATUS_UPDATE_INTERVAL from now
                     refresh["last_status_email_at"] = active_elapsed
@@ -563,26 +555,14 @@ class EdmingleSync:
             # Course refresh was interrupted — skip student sync and resume directly
             self.sync_courses(state)
             self.logger.info("Resumed Edmingle sync run completed")
-            send_email_alert(
-                "[Vyoma Pipeline] COMPLETED — Course sync finished",
-                "The Edmingle course enrollment sync has completed successfully.\n\n"
-                "Output file : edmingle_course_enrollments.csv\n"
-                "Check       : edmingle_sync.log for full details."
-            )
+            _send_message("course_sync_completed")
             return
 
         # Full run — fetch students first then courses
         self.sync_students(state)
         self.sync_courses(self.load_state())
         self.logger.info("Edmingle sync run completed")
-        send_email_alert(
-            "[Vyoma Pipeline] COMPLETED — Full sync finished",
-            "The Edmingle full sync has completed successfully.\n\n"
-            "Output files:\n"
-            "  edmingle_students.csv\n"
-            "  edmingle_course_enrollments.csv\n\n"
-            "Check edmingle_sync.log for full run details."
-        )
+        _send_message("full_sync_completed")
 
 
 def configure_logging(log_path: Path) -> logging.Logger:
@@ -629,14 +609,9 @@ def main() -> int:
         rate = int(sync.config["max_calls_per_minute"])
         estimate = (f"~{student_count / rate / 60:.0f} hours (at {rate} calls/min, ~{student_count:,} students)"
                     if student_count else "unknown")
-        send_email_alert(
-            "[Vyoma Pipeline] STARTED — Sync has begun",
-            f"The Edmingle sync script has started successfully.\n\n"
-            f"Time    : {datetime.now()}\n"
-            f"Server  : {socket.gethostname()}\n"
-            f"Est. time : {estimate}\n"
-            f"You will receive a status update every "
-            f"{STATUS_UPDATE_INTERVAL / 3600:.1f} hours."
+        _send_message(
+            "started", time=datetime.now(), server=socket.gethostname(), estimate=estimate,
+            interval_hours=STATUS_UPDATE_INTERVAL / 3600,
         )
         sync.run()
 
@@ -666,18 +641,7 @@ def main() -> int:
             pass  # do not let file write failure hide the real error
 
         # Send failure email with step-by-step resume instructions
-        send_email_alert(
-            "[Vyoma Pipeline] FAILED — Script crashed",
-            f"The Edmingle sync script has crashed.\n\n"
-            f"Time    : {datetime.now()}\n\n"
-            f"Action  : Check edmingle_sync.log on the server for the error.\n\n"
-            f"To resume:\n"
-            f"  1. SSH into the VPS\n"
-            f"  2. cd {SCRIPT_DIR}\n"
-            f"  3. tmux attach -t ela_mis_datasets\n"
-            f"  4. python3 edmingle_student_course_sync.py\n"
-            f"  The script will automatically resume from last checkpoint."
-        )
+        _send_message("crashed", time=datetime.now(), script_dir=SCRIPT_DIR)
         return 1
 
     return 0

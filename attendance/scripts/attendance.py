@@ -143,9 +143,9 @@ def load_config(config_path: str) -> dict:
     cfg["api"]["org_id"] = edmingle["organization_id"]
     cfg["api"].setdefault("url", f"{edmingle['base_url']}/report/csv")
 
-    # Per-pipeline notification config, in this pipeline's own folder.
-    if not (common.REPO_ROOT / "attendance" / "notifications.yaml").exists():
-        sys.exit(f"\nNotifications file not found: {common.REPO_ROOT / 'attendance' / 'notifications.yaml'}\n")
+    # Notification settings come from the central notifications.yaml (pipelines: attendance: block).
+    if not common.NOTIFICATIONS_PATH.exists():
+        sys.exit(f"\nNotifications file not found: {common.NOTIFICATIONS_PATH}\n")
     cfg["_notifications"] = common.load_notifications("attendance")  # common.send_mail reads the SMTP block
     email_channel = (cfg["_notifications"].get("channels") or {}).get("email") or {}
     for key in ("notify_on_critical", "notify_on_warning", "notify_on_completion"):
@@ -226,15 +226,15 @@ def acquire_lock(path: str, log: logging.Logger):
 
 # ── EMAIL ──
 
-_SUBJECT_TAGS = {"critical": "CRITICAL", "warning": "WARNING", "completion": "SUCCESS"}
-
-
-def notify(cfg: dict, kind: str, subject: str, details: dict, log: logging.Logger) -> None:
-    """Plain-text email through common.send_mail (never raises). `kind` is critical / warning / completion;
-    notifications.yaml switches each on or off (notify_on_<kind>)."""
-    if cfg["email"][f"notify_on_{kind}"]:
-        body = "\n".join(f"{key}: {value}" for key, value in details.items())
-        common.send_mail(cfg["_notifications"], f"[{_SUBJECT_TAGS[kind]}] Edmingle Pipeline -- {subject[:80]}", body, log)
+def notify(cfg: dict, key: str, log: logging.Logger, **values) -> None:
+    """Plain-text email through common.send_mail (never raises). The wording of message `key` comes from
+    ../notification_messages.yaml, which also says its level: critical / warning /
+    completion. notifications.yaml (pipelines: attendance:) switches each level on or off (notify_on_<level>).
+    If the wording file is broken the level defaults to critical, so an alert is never silently dropped."""
+    level = common.message_field("attendance", key, "level", "critical")
+    if cfg["email"][f"notify_on_{level}"]:
+        subject, body = common.render_message("attendance", key, log, **values)
+        common.send_mail(cfg["_notifications"], subject, body, log)
 
 
 # ── DISK SPACE CHECK ──
@@ -403,12 +403,7 @@ def run_pull_loop(dates: list, session: requests.Session, cfg: dict, log: loggin
 
         except FatalAPIError as e:
             log.critical(f"Fatal API error: {e}. Run aborted.")
-            notify(cfg, "critical", str(e), {
-                "Error":    str(e),
-                "Date":     date_str,
-                "Progress": f"{i-1}/{len(dates)} dates completed",
-                "Action":   "Fix attendance_config.yaml / credentials.yaml and re-run (finished days are kept; the run will resume).",
-            }, log)
+            notify(cfg, "fatal_api_error", log, error=str(e), date=date_str, done=i - 1, total=len(dates))
             raise PipelineError(f"Fatal API error: {e}")
 
         except ValueError:
@@ -416,19 +411,11 @@ def run_pull_loop(dates: list, session: requests.Session, cfg: dict, log: loggin
             consecutive += 1
             n_fail      += 1
             log.error(f"  [{date_str}] Failed. Consecutive failures: {consecutive}/{max_consec}.")
-            notify(cfg, "warning", f"Date {date_str} failed after all retries", {
-                "Consecutive failures": str(consecutive),
-                "Max allowed":          str(max_consec),
-            }, log)
+            notify(cfg, "date_failed", log, date=date_str, consecutive=consecutive, max_allowed=max_consec)
             if consecutive >= max_consec:
                 msg = f"Circuit breaker: {consecutive} consecutive failures at {date_str}. Stopping pull."
                 log.critical(msg)
-                notify(cfg, "critical", msg, {
-                    "Error":            msg,
-                    "Last failed date": date_str,
-                    "Progress":         f"{i-1}/{len(dates)} dates",
-                    "Action":           "Fix the issue and re-run (finished days are kept).",
-                }, log)
+                notify(cfg, "circuit_breaker", log, error=msg, date=date_str, done=i - 1, total=len(dates))
                 raise PipelineError(msg)
             if i < len(dates):
                 time.sleep(sleep_s)
@@ -972,25 +959,20 @@ def main():
         for k, v in stats.items():
             log.info(f"  {k}: {v}")
 
-        notify(cfg, "completion", "Run Complete", stats, log)
+        notify(cfg, "run_complete", log, details=common.format_details(stats))
         log.info("Pipeline complete.")
 
     except PipelineError as e:
         log.critical(f"Pipeline error: {e}")
-        notify(cfg, "critical", str(e), {
-            "Error":   str(e),
-            "Elapsed": f"{(datetime.now(IST) - run_start).total_seconds() / 60:.1f} min",
-        }, log)
+        notify(cfg, "pipeline_error", log, error=str(e),
+               elapsed_minutes=(datetime.now(IST) - run_start).total_seconds() / 60)
         exit_code = 1
 
     except Exception as e:
         tb = traceback.format_exc()
         log.critical(f"Unexpected error: {e}\n{tb}")
-        notify(cfg, "critical", f"Unexpected error: {e}", {
-            "Error":     f"Unexpected error: {e}",
-            "Traceback": tb[:2000],
-            "Elapsed":   f"{(datetime.now(IST) - run_start).total_seconds() / 60:.1f} min",
-        }, log)
+        notify(cfg, "unexpected_error", log, error=e, traceback=tb[:2000],
+               elapsed_minutes=(datetime.now(IST) - run_start).total_seconds() / 60)
         exit_code = 1
 
     finally:

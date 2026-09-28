@@ -39,7 +39,7 @@ intended consumers, and don't exist yet.
 | `output/logs/<stage>/<stage>_<timestamp>.log` | Per-run logs. |
 | `output/master_attendance.csv`, `resolve_class_ids_run*.log`, `build_master_attendance_run.log`, `logs/build_course_catalog_alt/` | Legacy artifacts from an earlier pipeline version — no current script produces or reads them. See Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `load_credentials`/`load_notifications`/`send_mail` (used via `pipeline_common.py`). |
-| `../notifications.yaml` | SMTP/recipient config (this pipeline's own folder). |
+| `../../notifications.yaml`, `../notification_messages.yaml` | Central SMTP/recipient config (repo root) and this pipeline's run-report wording (pipeline folder). |
 
 ## 4. Source System
 
@@ -73,6 +73,7 @@ intended consumers, and don't exist yet.
 - **Stage 3 CLI:** `--in`, `--start`/`--end` (required), `--out`, `--limit`, `--calls_per_minute`, `--restart`, `--apikey`.
 - **`../../credentials.yaml`:** `api_key`, `organization_id`, `institute_id`, `base_url` — all required (no built-in fallback ids or URL; a missing one exits with a message). `--apikey` only overrides the key.
 - **`notifications.yaml`:** merged onto `config["smtp"]` only if `channels.email.enabled`.
+- **`scripts/session_wise_attendance_config.json`:** `calls_per_minute` (default 24, the default of `--calls_per_minute` in all three stages) and `request_timeout_seconds` (default 30). Optional — the defaults apply if the file is missing.
 - **Hardcoded:** `BATCH_IDS_TO_EXCLUDE` (20 values), `NOT_CONDUCTED_STATUSES={2,3}`.
 - `config.yaml` was removed 2026-09-23 — its tunables were either unread by any script or already had a safe inline default.
 
@@ -122,7 +123,7 @@ response-shape validation on every call.
 - Stage 1 has no row-level resume — a crash requires a full restart (explicit design, since `Is_Latest_Batch`/`bundle_enrollment_count` need the complete dataset).
 - `output/master_attendance.csv` has a schema the current code deliberately excludes — no current script produces it; appears to be a leftover from an earlier version.
 - Three root-level `.log` files and a `build_course_catalog_alt/` log directory are legacy artifacts of scripts that no longer exist.
-- `notifications.yaml` has placeholder sender/recipient addresses while `enabled: true` — run-report emails believe they're sending but don't reach a real inbox.
+- Run-report emails use the central `notifications.yaml` sender and default recipients (this pipeline has no override block), so since 2026-09-28 they reach a real inbox; before that it had placeholder addresses and nothing arrived.
 - No automated reconciliation between `num_users` (enrollment) and `present` (attendance) — a manual-awareness item per the project's own documentation, not a code-enforced check.
 - The unit test suite covering this pipeline's business logic was removed 2026-09-23 along with `config.yaml` — no automated regression safety net currently exists for the Section 14 business rules.
 
@@ -144,7 +145,7 @@ Entirely `print()`-based; `PipelineRunLogger` mirrors output into `output/logs/<
 
 ## 12. Setup & How to Run
 
-Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`api_key`, `organization_id`, `institute_id`); `../notifications.yaml` populated if run-report emails are wanted (it still has placeholder addresses). Run the three stages **in order** — each needs the previous one's output.
+Step-by-step guide: [RUN_GUIDE.md](RUN_GUIDE.md). Before running: `../../credentials.yaml` filled in (`api_key`, `organization_id`, `institute_id`); `../../notifications.yaml` populated if run-report emails are wanted (it still has placeholder addresses). Run the three stages **in order** — each needs the previous one's output.
 
 ```bash
 source /home/projectdev/ela_datasets/.venv/bin/activate
@@ -200,7 +201,8 @@ None — all three stages are run manually, in order, whenever upstream data nee
 - **Batch exclusion list** → `BATCH_IDS_TO_EXCLUDE` in `build_course_catalog.py`.
 - **Latest-batch/Final_Status rule** → `mark_latest_batch()`/`apply_business_logic()`.
 - **session_conducted mapping** → `NOT_CONDUCTED_STATUSES` in `build_session_attendance.py`.
-- **Rate limiting** → `--calls_per_minute`, or each script's `DEFAULT_CALLS_PER_MINUTE`.
+- **Rate limiting / request timeout** → `--calls_per_minute`, or `calls_per_minute` / `request_timeout_seconds` in `scripts/session_wise_attendance_config.json` (shared by all three stages).
+- **Email wording** → `../notification_messages.yaml`.
 - **New Stage 3 output columns** → `SESSION_BASE_COLUMNS` and `MASTER_OUTPUT_COLUMNS` (both in `build_session_attendance.py`, derived from each other so they can't drift).
 - **Stage 2/3 resume behaviour** → `load_processed_ids()`/`append_rows_to_csv()` in `pipeline_common.py`.
 - **Legacy artifact cleanup** → confirm with the project owner before deleting `master_attendance.csv` or the root-level `.log` files.
@@ -211,7 +213,7 @@ None — all three stages are run manually, in order, whenever upstream data nee
 
 ## 18. Security Considerations
 
-The API key is sent in headers only (never in the URL since 2026-09-25, so it cannot appear in a logged URL or exception) and is never logged. `../notifications.yaml` is `chmod 600`. None of the three output CSVs contain individual student PII (course/batch/session level). The placeholder SMTP addresses mean no run-report email leaves this pipeline — an availability concern, not a data exposure.
+The API key is sent in headers only (never in the URL since 2026-09-25, so it cannot appear in a logged URL or exception) and is never logged. `../../notifications.yaml` is `chmod 600`. None of the three output CSVs contain individual student PII (course/batch/session level). The placeholder SMTP addresses mean no run-report email leaves this pipeline — an availability concern, not a data exposure.
 
 **Removed 2026-09-28:** the standalone spot-check script (`attendance_crossvalidation.py`) and its `attendance_spotcheck.csv` output, per the project owner's decision — it was not part of the ordered Stage 1→2→3 run. The two functions it also supplied to Stage 3 (`fetch_org_attendances`, `sessions_to_dataframe`) moved into `build_session_attendance.py`, unchanged; verified against the live API (class_id 27255, the same 43 sessions, byte-identical output) before removal.
 
