@@ -1,41 +1,37 @@
 # country_wise_data — Run Guide
 
-Country per student, three stages: (1) Edmingle geo-IP, (2) phone dial code, (3) merge. Details: [COUNTRY_WISE_DATA.md](COUNTRY_WISE_DATA.md).
+Works out each learner's country and saves it in one file. It runs in 3 stages: (1) Edmingle's own location guess, (2) a guess from the phone number, (3) merge the two. Full technical detail: [COUNTRY_WISE_DATA.md](COUNTRY_WISE_DATA.md).
 
 ## Before you start
-- `/home/projectdev/ela_datasets/credentials.yaml` has a valid key (Stage 1 only).
-- Stage 2 needs a fresh `Student-Export*.csv` (Edmingle admin panel) in `input/`.
-- `start_date` is in `scripts/ip_driven_country_data_config.json`; `end_date` is automatic (end of today) unless you add it there.
-- To **re-pull Stage 1** (it never refreshes a finished pull by itself): delete `output/user_country_list.csv` and `output/user_country_list_checkpoint.json`, then run it — a few minutes.
-- Run stages **in order** — Stage 3 needs 1 and 2. Every Stage 1 run re-pulls everything and replaces the file (no resume; ~5-15 minutes).
-- Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.
+- Make sure `credentials.yaml` (shared) has a working key — needed for Stage 1 only.
+- Before Stage 2, download a fresh Student Export from the Edmingle admin panel and put it in `input/` as `Student-Export*.csv`.
+- Always run the 3 stages **in order** — each one needs the file the last one made.
+- Stage 1 always pulls everything fresh — there's no "continue where it left off," it just takes 5–15 minutes.
+- Only run one pipeline at a time.
 
-## Run
-```bash
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/country_wise_data/scripts
-python3 ip_driven_country_data.py --config ip_driven_country_data_config.json   # Stage 1 (long, resumable)
-python3 dial_code_to_country.py                                                 # Stage 2 (seconds)
-python3 merge_country_data.py                                                   # Stage 3
-```
+## Steps
+1. Turn on the environment: `source /home/projectdev/ela_datasets/.venv/bin/activate`
+2. Go to the folder: `cd /home/projectdev/ela_datasets/country_wise_data/scripts`
+3. Run all three, in order:
+   ```
+   python3 ip_driven_country_data.py --config ip_driven_country_data_config.json   # Stage 1
+   python3 dial_code_to_country.py                                                 # Stage 2
+   python3 merge_country_data.py                                                   # Stage 3
+   ```
 
-## Check
-- `output/user_country_list_checkpoint.json` shows the page reached and the `end_date` window. Last seen: page 124, 61,722 rows — **complete for a window ending 19 Aug 2026; today's window has 65,391 users**, so re-pull Stage 1 (see above).
-- `output/Student-Export_with_country.csv` and `output/merged_country_data.csv` were rewritten. Merged rows ≠ export rows (it also holds Stage-1-only users).
+## How to tell it worked
+- `output/Student-Export_with_country.csv` and `output/merged_country_data.csv` are freshly rewritten.
+- The merged file should have the same number of rows as the Student Export you started with.
 
-## If it stops
-Re-run the same command; Stage 1 continues from its checkpoint (same date window). If it says the checkpoint has no saved end date, delete the two Stage 1 files as above. Stage 2 "No --input given…" → put a `Student-Export*.csv` in `input/`. Stage 3 "not found" → run Stages 1–2 first.
+## If something goes wrong
+- **Stage 1 fails partway** — just run it again from the start; nothing is kept from a failed run.
+- **Stage 2 says "No --input given"** — you forgot to put a Student Export file in `input/`.
+- **Stage 3 says a file is "not found"** — you skipped Stage 1 or 2; run them first.
 
-## tmux (Stage 1 is long)
-```
-step 1: tmux new -s country_wise_data          start the session (name = folder name)
-step 2: activate the venv, open the directory, run the script
-        source /home/projectdev/ela_datasets/.venv/bin/activate
-        cd /home/projectdev/ela_datasets/country_wise_data/scripts
-        python3 ip_driven_country_data.py --config ip_driven_country_data_config.json
-        python3 dial_code_to_country.py
-        python3 merge_country_data.py
-Ctrl+B then D                detach (the script keeps running)
-tmux ls                      list active sessions
-tmux attach -t country_wise_data      return to the session
-```
+## Running it in the background (Stage 1 is the long one)
+1. `tmux new -s country_wise_data`
+2. `source /home/projectdev/ela_datasets/.venv/bin/activate`
+3. `cd /home/projectdev/ela_datasets/country_wise_data/scripts`
+4. Run the 3 commands from Step 3 above, one after another.
+5. Detach and leave it running: press `Ctrl+B`, then `D`.
+6. Come back later: `tmux attach -t country_wise_data`

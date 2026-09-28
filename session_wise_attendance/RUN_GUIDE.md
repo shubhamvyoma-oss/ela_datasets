@@ -1,38 +1,34 @@
 # session_wise_attendance — Run Guide
 
-One row per class session, built in three stages: (1) course/batch catalogue, (2) class ids per batch, (3) attendance per class. Details: [SESSION_WISE_ATTENDANCE.md](SESSION_WISE_ATTENDANCE.md).
+Attendance for every individual class session. Edmingle can't hand this over directly, so it's built in 3 stages: (1) get the course/batch list, (2) look up each batch's class id, (3) pull attendance for each class. Full technical detail: [SESSION_WISE_ATTENDANCE.md](SESSION_WISE_ATTENDANCE.md).
 
 ## Before you start
-- `/home/projectdev/ela_datasets/credentials.yaml` has `api_key`, `organization_id`, `institute_id`.
-- Run stages **in order** — each reads the previous stage's file. Stage 3 dates are `YYYY-MM-DD`.
-- `notifications.yaml` (this folder) holds run-report email settings; check the recipient.
-- Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.
+- Make sure `credentials.yaml` (shared) has `api_key`, `organization_id`, and `institute_id`.
+- `scripts/session_wise_attendance_config.json` holds the speed limit and request timeout, shared by all 3 stages — the defaults are fine.
+- Check `notifications.yaml` (this folder) has the right email address for the run report.
+- Always run the 3 stages **in order** — each one reads the file the last one made.
+- Stage 3 dates are `YYYY-MM-DD`.
+- Only run one pipeline at a time.
 
-## Run
-```bash
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
-python3 build_course_catalog.py                                              # → output/course_catalog.csv
-python3 resolve_class_ids.py                                                 # → output/class_id_lookup.csv
-python3 build_session_attendance.py --start 2026-01-01 --end 2026-08-31      # → output/session_wise_attendance_data.csv
-```
+## Steps
+1. Start a background session: `tmux new -s session_wise_attendance`
+2. Turn on the environment: `source /home/projectdev/ela_datasets/.venv/bin/activate`
+3. Go to the folder: `cd /home/projectdev/ela_datasets/session_wise_attendance/scripts`
+4. Run the 3 stages, one after another:
+   ```
+   python3 build_course_catalog.py                                            # Stage 1 → output/course_catalog.csv
+   python3 resolve_class_ids.py                                               # Stage 2 → output/class_id_lookup.csv
+   python3 build_session_attendance.py --start 2026-01-01 --end 2026-08-31    # Stage 3 → output/session_wise_attendance_data.csv
+   ```
+5. Detach and let it run: press `Ctrl+B`, then `D`.
 
-## Check
-Each stage's log in `output/logs/<stage>/` ends with a `[RESULT]`/`[TOTAL]` line and has no `[ERROR]`.
+## How to tell it worked
+- Each stage has a log in `output/logs/<stage name>/`. It should end with a `[RESULT]` or `[TOTAL]` line and contain no `[ERROR]`.
 
-## If it stops
-Re-run the same command. Stages 2 and 3 skip finished rows (`--restart` discards progress); Stage 1 is short, just run it again. On a 429 the script waits out Edmingle's cool-down — let it.
+## If something goes wrong
+- **It stopped partway** — run the same command again. Stages 2 and 3 skip rows they already finished (`--restart` throws that progress away and starts over). Stage 1 is short, so just run it again.
+- **Edmingle says "too many requests" (429)** — the script waits out the cool-down by itself. Let it wait, don't interrupt.
 
-## tmux (recommended)
-```
-step 1: tmux new -s session_wise_attendance          start the session (name = folder name)
-step 2: activate the venv, open the directory, run the script
-        source /home/projectdev/ela_datasets/.venv/bin/activate
-        cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
-        python3 build_course_catalog.py
-        python3 resolve_class_ids.py
-        python3 build_session_attendance.py --start 2026-01-01 --end 2026-08-31
-Ctrl+B then D                detach (the script keeps running)
-tmux ls                      list active sessions
-tmux attach -t session_wise_attendance      return to the session
-```
+## Coming back to check on it
+- See it running: `tmux ls`
+- Reattach: `tmux attach -t session_wise_attendance`

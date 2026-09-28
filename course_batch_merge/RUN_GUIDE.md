@@ -1,34 +1,28 @@
 # course_batch_merge — Run Guide
 
-Merges the course catalogue with all-status batches into one CSV; under a minute. Details: [COURSE_BATCH_MERGE.md](COURSE_BATCH_MERGE.md).
+Combines the course catalogue with every batch (Active, Completed, and Archived) into one file. Finishes in under a minute. Full technical detail: [COURSE_BATCH_MERGE.md](COURSE_BATCH_MERGE.md).
 
 ## Before you start
-- `/home/projectdev/ela_datasets/credentials.yaml` has a valid key. No config or input needed.
-- The script name is **capitalised** (`Course_Batch_Merge.py`); Linux is case-sensitive.
-- Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.
+- Make sure `credentials.yaml` (shared) has a working key.
+- Check `scripts/course_batch_merge_config.json` if you ever need to change the request timeout — the default is fine.
+- The script's file name has capital letters: `Course_Batch_Merge.py`. Type it exactly.
+- Only run one pipeline at a time.
 
-## Run
-```bash
-source /home/projectdev/ela_datasets/.venv/bin/activate
-cd /home/projectdev/ela_datasets/course_batch_merge/scripts
-python3 Course_Batch_Merge.py
-```
-Finished with `SUCCESS! Saved N rows to file.`
+## Steps
+1. Turn on the environment: `source /home/projectdev/ela_datasets/.venv/bin/activate`
+2. Go to the folder: `cd /home/projectdev/ela_datasets/course_batch_merge/scripts`
+3. Run it: `python3 Course_Batch_Merge.py`
+4. Wait for `SUCCESS! Saved N rows to file.`
 
-## Check
-`output/course_batch_merge.csv` was just rewritten and has N rows.
+## How to tell it worked
+- `output/course_batch_merge.csv` was just rewritten, with the row count the script printed.
 
-## If it fails
-`ERROR occurred during execution!` → read the message under it (usually API key or network). The script still exits normally, so read the output.
+## If something goes wrong
+- **`ERROR occurred during execution!`** — read the line right under it, it explains why (usually the API key or the network). Note: the script still exits normally even when this happens, so don't assume no error message means success — check the log text itself.
 
-## tmux (optional — it finishes in seconds)
-```
-step 1: tmux new -s course_batch_merge          start the session (name = folder name)
-step 2: activate the venv, open the directory, run the script
-        source /home/projectdev/ela_datasets/.venv/bin/activate
-        cd /home/projectdev/ela_datasets/course_batch_merge/scripts
-        python3 Course_Batch_Merge.py
-Ctrl+B then D                detach (the script keeps running)
-tmux ls                      list active sessions
-tmux attach -t course_batch_merge      return to the session
-```
+## Running it in the background (optional — it only takes seconds)
+1. `tmux new -s course_batch_merge`
+2. `source /home/projectdev/ela_datasets/.venv/bin/activate`
+3. `cd /home/projectdev/ela_datasets/course_batch_merge/scripts`
+4. `python3 Course_Batch_Merge.py`
+5. Detach: press `Ctrl+B`, then `D`. Come back later: `tmux attach -t course_batch_merge`

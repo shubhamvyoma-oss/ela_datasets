@@ -1,17 +1,21 @@
 # ela_datasets — Run Guide
 
-Index of how to run each pipeline on the VPS. Each dataset folder has its own step-by-step `RUN_GUIDE.md`; deep technical detail is in its `<PIPELINE>.md`.
+This is the index. Each folder below has its own short run guide with the exact steps for that one.
 
-## Environment (read first)
+## First time on the server
 
-The VPS's system Python has no `pandas`/`phonenumbers`/`pycountry`, and there is no `python3-venv` or sudo. A working virtualenv already exists at `/home/projectdev/ela_datasets/.venv` (built with the `virtualenv.pyz` zipapp). Activate it once per shell (your prompt gets a `(.venv)` prefix; `deactivate` leaves it):
+1. Log in: `ssh projectdev@195.35.6.99`
+2. Turn on the Python environment (do this every time, in every new terminal):
+   ```
+   source /home/projectdev/ela_datasets/.venv/bin/activate
+   ```
+   Your prompt now starts with `(.venv)`. If you ever see errors about missing `pandas` or similar, you forgot this step.
+3. Every pipeline needs a working Edmingle API key in `credentials.yaml` (shared by all of them, kept up to date automatically).
 
-```bash
-source /home/projectdev/ela_datasets/.venv/bin/activate
+**Only run one pipeline at a time** — they all use the same API key and the same rate limit.
+
+If the `.venv` folder is ever missing, rebuild it:
 ```
-
-**Recreate it** if `.venv/` is ever lost:
-```bash
 cd /home/projectdev/ela_datasets
 curl -sL https://bootstrap.pypa.io/virtualenv.pyz -o /tmp/virtualenv.pyz
 python3 /tmp/virtualenv.pyz .venv
@@ -19,41 +23,32 @@ source .venv/bin/activate
 pip install pandas requests pyyaml phonenumbers pycountry
 ```
 
-**Docker alternative:** `docker build -t ela_datasets -f docker/Dockerfile .`, then `docker run --rm -it -v /home/projectdev/ela_datasets:/app ela_datasets bash`.
+## Running something that takes a long time (tmux)
 
-Every pipeline needs a valid `edmingle.api_key`/`organization_id` in the shared `credentials.yaml` (rotated monthly by the key generator). Run **one pipeline at a time** — they share one API key and rate limit.
+A few of these take hours. If you close your terminal, a normal command stops — tmux keeps it running.
 
-## tmux (for anything that runs longer than a few minutes)
+1. Start a session, named after the folder: `tmux new -s <folder name>`
+2. Turn on the environment and run the command as usual.
+3. Leave it running and disconnect: press `Ctrl+B`, then `D`.
+4. Come back later: `tmux attach -t <folder name>`
+5. See what's running: `tmux ls`
 
-The tmux session name is always the dataset folder name.
+## Which pipeline does what
 
-```
-step 1: tmux new -s <folder>          start the session
-step 2: source /home/projectdev/ela_datasets/.venv/bin/activate
-        cd /home/projectdev/ela_datasets/<folder>/scripts
-        python3 <script> <args>
-Ctrl+B then D                detach (the script keeps running)
-tmux ls                      list active sessions
-tmux attach -t <folder>      return to the session
-```
-
-## Datasets
-
-| Folder | Command (from `<folder>/scripts`) | tmux? | Guide |
+| Folder | What it does | Takes about | Needs tmux? |
 |---|---|---|---|
-| `attendance` | `python3 attendance.py --from YYYY-MM-DD --to YYYY-MM-DD` | yes (hours for long ranges) | [guide](attendance/RUN_GUIDE.md) |
-| `country_wise_data` | `python3 ip_driven_country_data.py --config ip_driven_country_data_config.json`, then `dial_code_to_country.py`, then `merge_country_data.py` | yes (Stage 1) | [guide](country_wise_data/RUN_GUIDE.md) |
-| `course_batch_merge` | `python3 Course_Batch_Merge.py` (capitalised) | optional | [guide](course_batch_merge/RUN_GUIDE.md) |
-| `course_catalogue_data` | `python3 course_catalogue_data.py` | no | [guide](course_catalogue_data/RUN_GUIDE.md) |
-| `edmingle_api_key_generator` | `python3 edmingle_generate_api_key.py` (also runs itself on the 25th, 09:00 IST) | no | [guide](edmingle_api_key_generator/RUN_GUIDE.md) |
-| `ela_mis_datasets` | `python3 edmingle_student_course_sync.py` (~72 h) | **always** | [guide](ela_mis_datasets/RUN_GUIDE.md) |
-| `enrollments_reports` | `python3 edmingle_export.py --start-date DD-MM-YYYY --end-date DD-MM-YYYY` | yes | [guide](enrollments_reports/RUN_GUIDE.md) |
-| `session_wise_attendance` | `python3 build_course_catalog.py`, then `resolve_class_ids.py`, then `build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD` | yes | [guide](session_wise_attendance/RUN_GUIDE.md) |
+| [attendance](attendance/RUN_GUIDE.md) | Daily attendance per batch/session | minutes to hours, depends on the date range | for long ranges |
+| [country_wise_data](country_wise_data/RUN_GUIDE.md) | Each learner's country | 15–20 minutes | yes |
+| [course_batch_merge](course_batch_merge/RUN_GUIDE.md) | Courses + batches in one file | under a minute | no |
+| [course_catalogue_data](course_catalogue_data/RUN_GUIDE.md) | Raw course catalogue | seconds | no |
+| [edmingle_api_key_generator](edmingle_api_key_generator/RUN_GUIDE.md) | Gets a new API key | under a minute | no |
+| [ela_mis_datasets](ela_mis_datasets/RUN_GUIDE.md) | Student list + full enrollment history | ~3 days | **always** |
+| [enrollments_reports](enrollments_reports/RUN_GUIDE.md) | Enrollments for a date range | minutes to hours, depends on the range | yes |
+| [session_wise_attendance](session_wise_attendance/RUN_GUIDE.md) | Attendance per class session | hours | yes |
 
-Notes:
-- `enrollments_reports` takes **`DD-MM-YYYY`** dates (every other dataset uses `YYYY-MM-DD`).
-- `country_wise_data` Stage 2 needs a fresh `Student-Export*.csv` in `input/`; run the stages in order.
-- `session_wise_attendance` stages must run in order.
-- `edmingle_api_key_generator` refuses to rotate while any pipeline is running (exit code 2); rotating revokes the old key at once. Flags: `--check-config`, `--verify-only`, `--force`.
-- After every rotation, update the key copy in `/home/projectdev/attendance_dataset/credentials.yaml` (the standalone attendance copy).
-- Long runs resume: re-run the same command after a crash and it continues where it left off (`attendance` skips the days already in `output/staging/`, `enrollments_reports` the 30-day chunks it already downloaded).
+## A few things worth knowing
+
+- Most of these pick up where they left off if they stop partway — just run the same command again.
+- `enrollments_reports` wants dates as `DD-MM-YYYY`. Everything else wants `YYYY-MM-DD`.
+- `country_wise_data` and `session_wise_attendance` each run in **stages, in order** — don't skip ahead.
+- If the API key ever expires (you'll see 401/403 errors), run `edmingle_api_key_generator` first, then retry.

@@ -1,33 +1,32 @@
 # enrollments_reports — Run Guide
 
-Exports enrollment rows for a date range in 30-day chunks into one CSV; long ranges take hours. Details: [ENROLLMENTS_REPORTS.md](ENROLLMENTS_REPORTS.md).
+Downloads individual enrollment records for any date range you choose, in 30-day pieces (Edmingle rejects one huge request), then joins them into one file. Long ranges can take hours. Full technical detail: [ENROLLMENTS_REPORTS.md](ENROLLMENTS_REPORTS.md).
 
 ## Before you start
-- `/home/projectdev/ela_datasets/credentials.yaml` has a valid key; `notifications.yaml` (this folder) is optional.
-- **Dates are `DD-MM-YYYY`** (every other dataset uses `YYYY-MM-DD`).
-- Output is always `output/edmingle_enrollment_report.csv` and is **replaced** when a run finishes (it does not exist partway through a first run) — copy it away first if you need to keep it.
-- Run **one pipeline at a time**: they all share one Edmingle API key and one rate limit, and the server has little spare memory.
+- Make sure `credentials.yaml` (shared) has a working key. `notifications.yaml` (this folder) is optional.
+- `scripts/enrollments_reports_config.json` holds chunk size, speed, and retry settings — the defaults are fine.
+- **Dates here are `DD-MM-YYYY`** — every other pipeline uses `YYYY-MM-DD`, so watch out.
+- The result is **always saved as `output/edmingle_enrollment_report.csv`** and gets **overwritten** every time a run finishes. If you want to keep an older run's file, copy or rename it first.
+- Only run one pipeline at a time.
 
-## Run (inside tmux — see below)
-```bash
-python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026
-```
-Progress lines look like `[chunk 1/2 p1] wrote 200 rows …`; it ends with `Done. Wrote N rows total`.
+## Steps
+1. Start a background session: `tmux new -s enrollments_reports`
+2. Turn on the environment: `source /home/projectdev/ela_datasets/.venv/bin/activate`
+3. Go to the folder: `cd /home/projectdev/ela_datasets/enrollments_reports/scripts`
+4. Run it with your dates: `python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026`
+5. Detach and let it run: press `Ctrl+B`, then `D`.
 
-## Check
-The log ends with `Done. Wrote N rows total`, `output/edmingle_enrollment_report.csv` was just replaced, and the `output/edmingle_enrollment_report.chunks/` folder is gone.
+While it runs you'll see lines like `[chunk 1/2 p1] wrote 200 rows …`. It's finished when you see `Done. Wrote N rows total`.
 
-## If it stops
-Re-run the same command; it skips the chunks already downloaded (at most one 30-day chunk is repeated). Re-running a finished range downloads it again.
+## How to tell it worked
+- The log ends with `Done. Wrote N rows total`.
+- `output/edmingle_enrollment_report.csv` was just replaced.
+- The temporary `output/edmingle_enrollment_report.chunks/` folder is gone.
 
-## tmux
-```
-step 1: tmux new -s enrollments_reports          start the session (name = folder name)
-step 2: activate the venv, open the directory, run the script
-        source /home/projectdev/ela_datasets/.venv/bin/activate
-        cd /home/projectdev/ela_datasets/enrollments_reports/scripts
-        python3 edmingle_export.py --start-date 01-09-2026 --end-date 30-09-2026
-Ctrl+B then D                detach (the script keeps running)
-tmux ls                      list active sessions
-tmux attach -t enrollments_reports      return to the session
-```
+## If something goes wrong
+- **It stopped partway** — run the exact same command again. It skips the 30-day pieces it already finished (at most one piece gets redone).
+- Running a range that already finished will just download it again from scratch.
+
+## Coming back to check on it
+- See it running: `tmux ls`
+- Reattach: `tmux attach -t enrollments_reports`
