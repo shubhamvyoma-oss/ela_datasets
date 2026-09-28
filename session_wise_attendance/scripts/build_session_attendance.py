@@ -48,6 +48,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
     BASE_URL,
+    PIPELINE_CONFIG,
     ApiError,
     PipelineRunLogger,
     RateLimiter,
@@ -63,7 +64,7 @@ from pipeline_common import (
 
 STAGE_NAME = "build_session_attendance"
 SCRIPT_DIR = Path(__file__).parent
-DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
+DEFAULT_CALLS_PER_MINUTE = PIPELINE_CONFIG["calls_per_minute"]  # safety margin under Edmingle's 30/min limit
 ORG_ATTENDANCES_ENDPOINT = f"{BASE_URL}/organization/attendances"
 IST_OFFSET_SECONDS = 5.5 * 3600
 

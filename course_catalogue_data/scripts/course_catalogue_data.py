@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -24,7 +25,15 @@ API_KEY = _edmingle["api_key"]
 
 BASE_URL = f"{_edmingle['base_url']}/institute/{_edmingle['institute_id']}/courses/catalogue"
 HEADERS = {"apikey": API_KEY, "ORGID": _edmingle["organization_id"]}
-REQUEST_TIMEOUT_SECONDS = 120  # the catalogue takes ~15 s; never wait forever
+
+# request_timeout_seconds: the catalogue takes ~15 s; never wait forever. Read from
+# course_catalogue_data_config.json if present, else this default.
+_CONFIG_PATH = os.path.join(SCRIPT_DIR, "course_catalogue_data_config.json")
+_CONFIG = {"request_timeout_seconds": 120}
+if os.path.exists(_CONFIG_PATH):
+    with open(_CONFIG_PATH, encoding="utf-8") as _f:
+        _CONFIG.update(json.load(_f))
+REQUEST_TIMEOUT_SECONDS = _CONFIG["request_timeout_seconds"]
 
 
 def fetch_courses():

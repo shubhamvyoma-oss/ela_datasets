@@ -31,7 +31,13 @@ from edmingle_credentials_writer import CredentialsUpdateError, update_shared_ap
 from edmingle_rotation_guard import RotationBlockedError, ensure_no_pipeline_running
 
 CREDENTIALS_PATH = str(Path(__file__).resolve().parents[2] / "credentials.yaml")
-REQUEST_TIMEOUT_SECONDS = 30
+
+# Read from edmingle_api_key_generator_config.json (next to this script) if present, else this default.
+_CONFIG_PATH = Path(__file__).resolve().parent / "edmingle_api_key_generator_config.json"
+_CONFIG = {"request_timeout_seconds": 30}
+if _CONFIG_PATH.exists():
+    _CONFIG.update(json.loads(_CONFIG_PATH.read_text(encoding="utf-8")))
+REQUEST_TIMEOUT_SECONDS = _CONFIG["request_timeout_seconds"]
 
 _edmingle = common.load_credentials(CREDENTIALS_PATH)
 _tutor_login = _edmingle.get("tutor_login", {})

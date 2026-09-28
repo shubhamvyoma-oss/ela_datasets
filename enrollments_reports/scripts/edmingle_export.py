@@ -18,6 +18,7 @@ Usage:
 import argparse
 import csv
 import io
+import json
 import logging
 import os
 import shutil
@@ -42,7 +43,8 @@ from common import RollingRateLimiter, format_duration
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Defaults for every run (there is no config file); no CLI flag -- override at the call site if ever needed.
+# Defaults for every run; no CLI flag -- override in enrollments_reports_config.json (next to
+# this script) if ever needed.
 DEFAULTS = {
     "chunk_days": 30,
     "per_page": 200,
@@ -52,6 +54,9 @@ DEFAULTS = {
     "maximum_retry_delay_seconds": 60,
     "rate_limit_block_seconds": 300,
 }
+_CONFIG_PATH = SCRIPT_DIR / "enrollments_reports_config.json"
+if _CONFIG_PATH.exists():
+    DEFAULTS.update(json.loads(_CONFIG_PATH.read_text(encoding="utf-8")))
 
 
 def send_mail(subject: str, body: str, logger: logging.Logger) -> None:

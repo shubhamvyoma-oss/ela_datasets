@@ -51,6 +51,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).parent))
 from pipeline_common import (
     BASE_URL,
+    PIPELINE_CONFIG,
     ApiError,
     PipelineRunLogger,
     RateLimiter,
@@ -75,7 +76,7 @@ OUTPUT_COLUMNS = [
     "num_users", "associated_masterbatches",
 ]
 
-DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
+DEFAULT_CALLS_PER_MINUTE = PIPELINE_CONFIG["calls_per_minute"]  # safety margin under Edmingle's 30/min limit
 
 
 def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int, max_retries: int = 2) -> list:

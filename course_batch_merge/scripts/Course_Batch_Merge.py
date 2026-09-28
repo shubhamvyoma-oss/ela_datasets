@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -41,7 +42,15 @@ OUTPUT_COLUMNS = [
 ]
 
 HEADERS = {"apikey": API_KEY, "ORGID": ORGANIZATION_ID, "Accept": "application/json"}
-REQUEST_TIMEOUT_SECONDS = 120  # each call takes seconds; never wait forever
+
+# request_timeout_seconds: each call takes seconds; never wait forever. Read from
+# course_batch_merge_config.json if present, else this default.
+_CONFIG_PATH = os.path.join(SCRIPT_DIR, "course_batch_merge_config.json")
+_CONFIG = {"request_timeout_seconds": 120}
+if os.path.exists(_CONFIG_PATH):
+    with open(_CONFIG_PATH, encoding="utf-8") as _f:
+        _CONFIG.update(json.load(_f))
+REQUEST_TIMEOUT_SECONDS = _CONFIG["request_timeout_seconds"]
 
 
 def log_progress(message):

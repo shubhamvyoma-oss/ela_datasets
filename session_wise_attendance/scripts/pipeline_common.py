@@ -1,17 +1,19 @@
 """
-pipeline_common.py -- shared helpers for this pipeline's 4 network-calling scripts: config
-loading (credentials.yaml + this pipeline's notifications.yaml), HTTP 429 backoff parsing,
-output-folder resolution, rate-limit spacing, per-run file logging, and the end-of-run email
-report. Credential/notification reading and SMTP sending delegate to ela_datasets/common.py.
+pipeline_common.py -- shared helpers for this pipeline's 3 network-calling scripts: config
+loading (credentials.yaml + this pipeline's notifications.yaml + this pipeline's own
+session_wise_attendance_config.json), HTTP 429 backoff parsing, output-folder resolution,
+rate-limit spacing, per-run file logging, and the end-of-run email report. Credential/
+notification reading and SMTP sending delegate to ela_datasets/common.py.
 
 USAGE
     from pipeline_common import (
         load_config, parse_retry_after_seconds, resolve_output_folder,
         RateLimiter, PipelineRunLogger, send_run_report, BASE_URL, auth_headers, require_config,
-        get_json, ApiError, load_processed_ids, append_rows_to_csv,
+        get_json, ApiError, load_processed_ids, append_rows_to_csv, PIPELINE_CONFIG,
     )
 """
 
+import json
 import re
 import sys
 import time
@@ -31,6 +33,22 @@ DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't 
 BASE_URL = common.edmingle_settings()["base_url"]
 auth_headers = common.auth_headers  # re-exported for the stage scripts
 
+# This pipeline's own tuning knobs (rate limit, request timeout) -- read once from
+# session_wise_attendance_config.json next to this module if present, else these defaults
+# (the values every stage script hardcoded before 2026-09-28).
+_PIPELINE_CONFIG_DEFAULTS = {"calls_per_minute": 24, "request_timeout_seconds": 30}
+_PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent / "session_wise_attendance_config.json"
+
+
+def load_pipeline_config() -> dict:
+    cfg = dict(_PIPELINE_CONFIG_DEFAULTS)
+    if _PIPELINE_CONFIG_PATH.exists():
+        cfg.update(json.loads(_PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")))
+    return cfg
+
+
+PIPELINE_CONFIG = load_pipeline_config()  # re-exported for the stage scripts' own defaults
+
 
 def require_config(config: dict, key: str):
     """config[key] from credentials.yaml, or exit with a clear message -- no hardcoded fallback ids."""
@@ -43,7 +61,8 @@ def require_config(config: dict, key: str):
 
 def load_config(script_dir: Path) -> dict:
     """Builds the config dict from the shared ../../credentials.yaml and this pipeline's own
-    ../notifications.yaml. This pipeline has no config.yaml."""
+    ../notifications.yaml. Rate-limit/timeout tuning lives separately in PIPELINE_CONFIG
+    (see load_pipeline_config()), not in this dict."""
     config: dict = {}
     _merge_credentials(config, script_dir)
     _merge_notifications(config)
@@ -245,7 +264,8 @@ def get_json(url: str, headers: dict, params: dict | None = None, attempts: int 
     """common.get_json with this pipeline's defaults: short backoff, and a 429 waits out Edmingle's own
     reported cool-down. Raises ApiError when the call cannot succeed."""
     return common.get_json(
-        url, headers=headers, params=params, timeout=30, attempts=attempts, delay=2, max_delay=8,
+        url, headers=headers, params=params, timeout=PIPELINE_CONFIG["request_timeout_seconds"],
+        attempts=attempts, delay=2, max_delay=8,
         block_seconds=lambda resp: parse_retry_after_seconds(resp.text), label=label, logger=PrintLogger,
     )
 
