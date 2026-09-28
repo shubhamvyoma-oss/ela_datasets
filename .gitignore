@@ -33,3 +33,6 @@ Thumbs.db
 
 # Local virtual environment (created via virtualenv.pyz -- see RUN_GUIDE.md)
 .venv/
+
+# Ruff lint cache
+.ruff_cache/
