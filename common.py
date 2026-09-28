@@ -8,8 +8,7 @@ rolling-window rate limiter, and crash-safe atomic file writes.
 
 Email settings live in ONE central file, ela_datasets/notifications.yaml (sender login + default
 recipients, plus optional per-pipeline overrides); the wording of each email lives in
-<pipeline>/notification_messages.yaml (only pipelines that send email have one). See NOTIFICATIONS.md at
-the repo root for who gets emailed by what.
+<pipeline>/notification_messages.yaml (only pipelines that send email have one).
 
 Every pipeline is one directory below the repo root (e.g.
 enrollments_reports/scripts/edmingle_export.py), so `from pathlib import

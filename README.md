@@ -48,7 +48,6 @@ ela_datasets/
 ├── .venv/                   # shared Python environment (gitignored)
 ├── docker/                  # alternative containerized runtime
 ├── RUN_GUIDE.md              # how to run each pipeline (index)
-├── NOTIFICATIONS.md           # local-only index of who gets emailed (gitignored)
 └── <pipeline>/
     ├── RUN_GUIDE.md          # step-by-step run guide (+ tmux for long runs)
     ├── <PIPELINE>.md         # that pipeline's full technical documentation
@@ -65,7 +64,6 @@ ela_datasets/
 | `RUN_GUIDE.md` | Run index + environment + tmux cheat-sheet |
 | `<pipeline>/RUN_GUIDE.md` | Step-by-step run guide for that pipeline |
 | `<pipeline>/<PIPELINE>.md` | Deep technical doc per pipeline — endpoints, schema, rules, limitations, raw payload skeleton |
-| `NOTIFICATIONS.md` | Local-only index of which pipeline emails whom (gitignored, not on GitHub) |
 
 ## Shared infrastructure
 
@@ -84,7 +82,6 @@ ela_datasets/
 | `notifications.yaml` (repo root) | The one email login (SMTP) + default recipients for every pipeline, with an optional `pipelines:` block per pipeline (own recipients, on/off switches) | No — gitignored, `chmod 600` |
 | `<pipeline>/notification_messages.yaml` | The wording (subject + body, with `{placeholders}`) of that pipeline's emails; only the 5 pipelines that send email have one. No secrets | **Yes** — committed |
 | `<pipeline>/scripts/<name>_config.json` (attendance: `attendance_config.yaml`) | That pipeline's own tuning knobs: timeouts, retries, rate limits, chunk sizes. No secrets. Every pipeline has one. `attendance`, `country_wise_data` and `ela_mis_datasets` **require** theirs (they exit if it is missing); the other five fall back to built-in defaults | **Yes** — committed |
-| `NOTIFICATIONS.md` | Local index mirroring real recipient addresses | No — gitignored |
 
 No pipeline hardcodes a secret in its own source — every credential is loaded from `credentials.yaml`
 or the central `notifications.yaml` at runtime. Never commit those; `.gitignore` already excludes them by pattern
