@@ -223,51 +223,34 @@ def filter_excluded_batches(df):
 
 
 def mark_latest_batch(df):
+    # Sort per bundle, newest start_date first (batch_id as tiebreaker), then flag each bundle's
+    # first row as its latest batch -- pandas' own duplicate-marking does the "one flag per group"
+    # loop for us.
     working_df = df.copy()
-
-    # Convert Unix timestamp start_date to a number for sorting
     working_df["_sort_date"] = pd.to_numeric(working_df["start_date"], errors="coerce").fillna(0)
-
-    # Sort: per bundle, newest start_date first; use batch_id as tiebreaker
     working_df = working_df.sort_values(
         ["bundle_id", "_sort_date", "batch_id"],
         ascending=[True, False, False]
     ).reset_index(drop=True)
-
-    working_df["Is_Latest_Batch"] = 0
-
-    last_bundle = None
-    for i in range(len(working_df)):
-        current_bundle = working_df.loc[i, "bundle_id"]
-        if current_bundle != last_bundle:
-            working_df.loc[i, "Is_Latest_Batch"] = 1
-            last_bundle = current_bundle
-
-    working_df = working_df.drop(columns=["_sort_date"])
-    return working_df
+    working_df["Is_Latest_Batch"] = (~working_df["bundle_id"].duplicated()).astype(int)
+    return working_df.drop(columns=["_sort_date"])
 
 
 def apply_business_logic(df):
+    # Catalogue_Status mirrors the raw catalogue Status column. Final_Status defaults to
+    # "Completed"; the latest batch of each bundle instead uses its own catalogue Status, or a
+    # blank if that status isn't one of the recognised ones.
     working_df = df.copy()
-
-    # Catalogue_Status mirrors the raw catalogue Status column
     working_df["Catalogue_Status"] = working_df["Status"]
 
-    # Default: all non-latest batches are Completed
-    working_df["Final_Status"] = "Completed"
-
     valid_statuses = ["Completed", "Ongoing", "Upcoming"]
+    raw_status = working_df["Status"].astype(str).str.strip()
+    is_latest = working_df["Is_Latest_Batch"] == 1
+    is_valid = raw_status.isin(valid_statuses)
 
-    for i in range(len(working_df)):
-        if working_df.loc[i, "Is_Latest_Batch"] == 1:
-            raw_status = str(working_df.loc[i, "Status"]).strip()
-            # Latest batch uses the catalogue Status as its Final_Status
-            if raw_status in valid_statuses:
-                working_df.loc[i, "Final_Status"] = raw_status
-            else:
-                # Latest batch but no catalogue match — leave blank
-                working_df.loc[i, "Final_Status"] = ""
-
+    working_df["Final_Status"] = "Completed"
+    working_df.loc[is_latest & is_valid, "Final_Status"] = raw_status[is_latest & is_valid]
+    working_df.loc[is_latest & ~is_valid, "Final_Status"] = ""
     return working_df
 
 

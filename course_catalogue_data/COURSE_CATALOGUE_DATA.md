@@ -257,6 +257,3 @@ response, not by this pipeline.
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
-
----
-*Initial documentation: 2026-09-24; updated 2026-09-24 after fixing the runtime environment (`.venv`) and confirming a clean run (566 rows, 61 columns). Downstream consumer and project/technical owner: requires confirmation.*

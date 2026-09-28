@@ -266,8 +266,3 @@ batches. This pipeline's `batch_id` is the batch object's `class_id`; `batch_enr
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
-
----
-*Initial documentation: 2026-09-24. Downstream: per prior documentation, this schema matches a
-"verified `vyoma_master.csv` reference," implying a Power BI consumer — not confirmed from this
-repo. Project/technical owner: requires confirmation.*

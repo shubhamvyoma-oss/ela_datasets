@@ -2,7 +2,7 @@
 
 ## 1. Overview & Purpose
 
-A 3-stage funnel pulling course/batch/attendance data from Edmingle into one session-level attendance dataset. The stages exist because of a hard Edmingle constraint: **attendance cannot be queried by `batch_id`** — only by `class_id`, a hidden subject/stream identifier with no documented way to derive it from a `batch_id`. A fourth script, `attendance_crossvalidation.py`, is both a standalone spot-check tool and a shared code dependency of Stage 3.
+A 3-stage funnel pulling course/batch/attendance data from Edmingle into one session-level attendance dataset. The stages exist because of a hard Edmingle constraint: **attendance cannot be queried by `batch_id`** — only by `class_id`, a hidden subject/stream identifier with no documented way to derive it from a `batch_id`.
 
 **Purpose:** answer "how many students has Vyoma served, and how well did they attend?" via a course/batch catalog (Stage 1), a batch→class_id table (Stage 2) and a session-level attendance dataset keyed by `class_id` (Stage 3).
 
@@ -17,12 +17,9 @@ flowchart TD
     B --> B1["GET .../masterbatch/&lt;batch_id&gt;<br/>one call per batch, checkpointed"]
     B1 --> B2[class_id_lookup.csv]
     B2 --> C["Stage 3: build_session_attendance.py"]
-    C --> C1["fetch_org_attendances() from<br/>attendance_crossvalidation.py<br/>GET .../organization/attendances<br/>one call per class_id, checkpointed"]
+    C --> C1["fetch_org_attendances()<br/>GET .../organization/attendances<br/>one call per class_id, checkpointed"]
     C1 --> C2["sessions_to_dataframe()<br/>IST conversion, session_conducted,<br/>session_number per master_batch_id"]
     C2 --> C3[session_wise_attendance_data.csv]
-    D["attendance_crossvalidation.py<br/>(standalone spot-check tool)"] -.->|supplies shared functions| C
-    D --> D1["GET .../organization/attendances<br/>+ GET .../bundle/general/attendancedet<br/>for one class_id"]
-    D1 --> D2[attendance_spotcheck.csv]
 ```
 
 **Lineage:** catalogue + batch listing APIs → `course_catalog.csv` → `/masterbatch/<batch_id>` →
@@ -34,12 +31,11 @@ intended consumers, and don't exist yet.
 
 | Path | Purpose |
 |---|---|
-| `scripts/pipeline_common.py` | Shared helpers — config/credentials, `get_json()` (`common.get_json` with this pipeline's defaults), 429 backoff parsing, output-folder resolution, a flat-delay `RateLimiter`, `PipelineRunLogger`, `send_run_report()`. |
+| `scripts/pipeline_common.py` | Shared helpers — config/credentials, `get_json()` (`common.get_json` with this pipeline's defaults), 429 backoff parsing, output-folder resolution, a flat-delay `RateLimiter`, `PipelineRunLogger`, `send_run_report()`, and the resume/append helpers `load_processed_ids()`/`append_rows_to_csv()` shared by Stages 2 and 3. |
 | `scripts/build_course_catalog.py` | **Stage 1** — `course_catalog.csv`. |
 | `scripts/resolve_class_ids.py` | **Stage 2** — `class_id_lookup.csv`. |
-| `scripts/build_session_attendance.py` | **Stage 3** — `session_wise_attendance_data.csv`. |
-| `scripts/attendance_crossvalidation.py` | Dual role: standalone spot-check CLI, *and* supplies `fetch_org_attendances()`/`sessions_to_dataframe()`/`SESSION_BASE_COLUMNS` that Stage 3 imports directly (so the two can't drift on session-shaping logic). |
-| `output/course_catalog.csv`, `class_id_lookup.csv`, `session_wise_attendance_data.csv`, `attendance_spotcheck.csv` | Stage 1/2/3/spot-check outputs (3,024 / 1,385 / 11,985 / 26 lines incl. header). |
+| `scripts/build_session_attendance.py` | **Stage 3** — `session_wise_attendance_data.csv`; also defines `fetch_org_attendances()`/`sessions_to_dataframe()`/`SESSION_BASE_COLUMNS` (moved here 2026-09-28 from the now-removed standalone spot-check script, its only other user). |
+| `output/course_catalog.csv`, `class_id_lookup.csv`, `session_wise_attendance_data.csv` | Stage 1/2/3 outputs (3,024 / 1,385 / 11,985 lines incl. header). |
 | `output/logs/<stage>/<stage>_<timestamp>.log` | Per-run logs. |
 | `output/master_attendance.csv`, `resolve_class_ids_run*.log`, `build_master_attendance_run.log`, `logs/build_course_catalog_alt/` | Legacy artifacts from an earlier pipeline version — no current script produces or reads them. See Section 9. |
 | `../../credentials.yaml`, `../../common.py` | Shared credentials + `load_credentials`/`load_notifications`/`send_mail` (used via `pipeline_common.py`). |
@@ -53,7 +49,6 @@ intended consumers, and don't exist yet.
 | Batch listing | `.../short/masterbatch?status={0\|3}` | GET | Same | `status` (0/3; Archived never fetched), `page`, `per_page=1000` | Page number, stops when a page returns fewer than `per_page` | Same |
 | Batch → class_id | `.../masterbatch/{batch_id}` | GET | Headers + params (both `orgid`/`org_id` sent — Edmingle's docs disagree on which is read) | `batch_id` | One call per batch, checkpointed | Same |
 | Session attendance | `.../organization/attendances` | GET | Same dual header+param pattern | `start`/`end` (unix), `class_id` (optional) | One call per class_id, checkpointed | Same |
-| Attendance detail (spot-check only) | `.../bundle/general/attendancedet` | GET | `apikey` header | `start_date`/`end_date`, `top=1`, `class_id` | N/A | Same |
 
 ## 5. Extraction Process
 
@@ -63,13 +58,12 @@ intended consumers, and don't exist yet.
 
 **Stage 3:** reads Stage 2's output, drops unresolved rows, dedupes and resume-skips by `class_id`, calls `fetch_org_attendances()` per remaining `class_id` for the window, converts via `sessions_to_dataframe()` (IST, `session_conducted`, per-`master_batch_id` `session_number`), tags bundle info, appends immediately.
 
-**Standalone tool:** fetches one `class_id`'s attendance plus a cross-check against `/bundle/general/attendancedet`; not part of the ordered flow.
-
 ## 6. Function Reference
 
 - **`mark_latest_batch` / `apply_business_logic` / `compute_bundle_enrollment` (Stage 1)** — sort by `(bundle_id, start_date desc, batch_id desc)` and flag the first row per bundle as latest; `Final_Status` defaults to `"Completed"`, overridden by the catalogue status only for the latest batch (if Completed/Ongoing/Upcoming); `bundle_enrollment_count` is a `groupby().sum()` broadcast onto every row.
 - **`fetch_classes_for_batch(...)` (Stage 2)** — one `/masterbatch/<batch_id>` call; uses `get_json`: 429 waits Edmingle's reported duration, other errors retry up to `max_retries` (2) with a 2/4/8 s backoff, and it returns `[]` if the call keeps failing. (The old debug dump of the raw response on a run's first call was removed 2026-09-25.)
-- **`fetch_org_attendances(...)` / `sessions_to_dataframe(...)`** (in `attendance_crossvalidation.py`, imported by Stage 3) — fetch raw session dicts (header *and* query-param auth); convert UTC unix timestamps to IST with a manual `+5:30` offset (raw UTC is never written); derive `session_conducted` (`status not in {2,3}`); number sessions chronologically per `master_batch_id`.
+- **`fetch_org_attendances(...)` / `sessions_to_dataframe(...)`** (Stage 3) — fetch raw session dicts (header *and* query-param auth); convert UTC unix timestamps to IST with a manual `+5:30` offset (raw UTC is never written); derive `session_conducted` (`status not in {2,3}`); number sessions chronologically per `master_batch_id`.
+- **`load_processed_ids(...)` / `append_rows_to_csv(...)`** (in `pipeline_common.py`, shared by Stages 2 and 3) — the id set already written to an output CSV (for the resume-skip), and appending new rows (a DataFrame, or a list of dicts) to it, header only on the first write.
 - **`resolve_output_folder(...)` / `PipelineRunLogger`** (in `pipeline_common.py`) — output is anchored to `<script folder>/../output`; the logger mirrors every `print()` into a timestamped log, marking `[RUN START]`/`[RUN END]`/`[RUN FAILED]`.
 
 ## 7. Configuration & Parameters
@@ -77,7 +71,6 @@ intended consumers, and don't exist yet.
 - **Stage 1 CLI:** `--apikey`, `--out` (default `course_catalog.csv`), `--calls_per_minute` (24).
 - **Stage 2 CLI:** `--in`, `--out`, `--limit`, `--calls_per_minute`, `--restart`, `--apikey`.
 - **Stage 3 CLI:** `--in`, `--start`/`--end` (required), `--out`, `--limit`, `--calls_per_minute`, `--restart`, `--apikey`.
-- **Spot-check CLI:** `--class_id` (optional), `--start`/`--end` (required), `--apikey`, `--out`.
 - **`../../credentials.yaml`:** `api_key`, `organization_id`, `institute_id`, `base_url` — all required (no built-in fallback ids or URL; a missing one exits with a message). `--apikey` only overrides the key.
 - **`notifications.yaml`:** merged onto `config["smtp"]` only if `channels.email.enabled`.
 - **Hardcoded:** `BATCH_IDS_TO_EXCLUDE` (20 values), `NOT_CONDUCTED_STATUSES={2,3}`.
@@ -93,8 +86,7 @@ Stage 2's misleading top-level `class_id` field · IST conversion and `session_c
 
 **Outputs** (all `utf-8-sig`, in `output/`): `course_catalog.csv` (Stage 1, written once
 atomically — no row-level resume). `class_id_lookup.csv` / `session_wise_attendance_data.csv`
-(Stages 2/3, append-only, fully checkpointed/resumable). `attendance_spotcheck.csv` (standalone,
-overwritten each run).
+(Stages 2/3, append-only, fully checkpointed/resumable).
 
 **Database integration:** not applicable — CSV output only.
 
@@ -113,10 +105,11 @@ columns (Subject, Level, Status, etc.), plus derived `Catalogue_Match`, `bundle_
 `individual_batch_attendance`, `session_start_ist`/`session_end_ist` (derived),
 `session_duration_min` (derived), `session_conducted` (derived), `session_number` (derived).
 
-**Legacy files:** `attendance_spotcheck.csv` matches `SESSION_BASE_COLUMNS` minus bundle fields.
-`master_attendance.csv` has columns (`signin_by_name`, `class_status_code`, etc.) that current
-code explicitly does **not** produce — no script in `scripts/` writes this file; documenting it as
-current output would misrepresent the live code.
+**Legacy files:** `master_attendance.csv` has columns (`signin_by_name`, `class_status_code`, etc.)
+that current code explicitly does **not** produce — no script in `scripts/` writes this file;
+documenting it as current output would misrepresent the live code. `attendance_spotcheck.csv` is
+likewise a leftover: the standalone spot-check script that wrote it was removed 2026-09-28 (see
+Section 15/19), but the file itself was not deleted.
 
 ## 9. Data Quality & Known Limitations
 
@@ -159,9 +152,6 @@ cd /home/projectdev/ela_datasets/session_wise_attendance/scripts
 python3 build_course_catalog.py
 python3 resolve_class_ids.py
 python3 build_session_attendance.py --start YYYY-MM-DD --end YYYY-MM-DD
-
-# Standalone spot-check (not part of the ordered run)
-python3 attendance_crossvalidation.py --class_id <id> --start YYYY-MM-DD --end YYYY-MM-DD
 ```
 Resume after a crash/429/Ctrl+C: re-run the same command — Stages 2/3 skip processed rows; `--restart` wipes progress; Stage 1 has no row-level resume.
 
@@ -182,7 +172,7 @@ tmux attach -t session_wise_attendance      return to the session
 
 ## 13. Automation / Scheduling
 
-None — all stages and the spot-check tool are run manually, in order, whenever upstream data needs refreshing.
+None — all three stages are run manually, in order, whenever upstream data needs refreshing.
 
 ## 14. Important Business / Technical Rules
 
@@ -201,7 +191,7 @@ None — all stages and the spot-check tool are run manually, in order, whenever
 | Stage 2/3 reports "0 remaining" immediately | Already fully resumed/complete | Expected — use `--restart` for a full re-pull, `--limit` for a partial test |
 | "429 received. Waiting X min" repeatedly | Edmingle's per-minute cap exceeded | Expected pacing — lower `--calls_per_minute` if frequent |
 | Stage 2 emits many blank-`class_id` rows | Genuinely unresolvable batches (self-paced/archived content) | Confirmed expected, not a fetch bug |
-| Stage 3 shows many `present=0` sessions | Pre-recorded content, live attendance never tracked | Cross-check with the spot-check tool against the classroom UI |
+| Stage 3 shows many `present=0` sessions | Pre-recorded content, live attendance never tracked | Cross-check against the classroom UI directly |
 | Run-report email never arrives | Placeholder SMTP addresses, or auth failure | Check the log for `[WARN] Email report failed`; fix `notifications.yaml` |
 | Stage 1 crashes partway | No row-level resume for this stage | Just re-run from scratch — output is written once, atomically, at the end |
 
@@ -209,9 +199,10 @@ None — all stages and the spot-check tool are run manually, in order, whenever
 
 - **Batch exclusion list** → `BATCH_IDS_TO_EXCLUDE` in `build_course_catalog.py`.
 - **Latest-batch/Final_Status rule** → `mark_latest_batch()`/`apply_business_logic()`.
-- **session_conducted mapping** → `NOT_CONDUCTED_STATUSES` in `attendance_crossvalidation.py` (propagates to Stage 3 automatically via the shared import).
+- **session_conducted mapping** → `NOT_CONDUCTED_STATUSES` in `build_session_attendance.py`.
 - **Rate limiting** → `--calls_per_minute`, or each script's `DEFAULT_CALLS_PER_MINUTE`.
-- **New Stage 3 output columns** → keep `SESSION_BASE_COLUMNS` (in `attendance_crossvalidation.py`) and `MASTER_OUTPUT_COLUMNS` (in `build_session_attendance.py`) in sync.
+- **New Stage 3 output columns** → `SESSION_BASE_COLUMNS` and `MASTER_OUTPUT_COLUMNS` (both in `build_session_attendance.py`, derived from each other so they can't drift).
+- **Stage 2/3 resume behaviour** → `load_processed_ids()`/`append_rows_to_csv()` in `pipeline_common.py`.
 - **Legacy artifact cleanup** → confirm with the project owner before deleting `master_attendance.csv` or the root-level `.log` files.
 
 ## 17. Upstream & Downstream Dependencies
@@ -221,6 +212,8 @@ None — all stages and the spot-check tool are run manually, in order, whenever
 ## 18. Security Considerations
 
 The API key is sent in headers only (never in the URL since 2026-09-25, so it cannot appear in a logged URL or exception) and is never logged. `../notifications.yaml` is `chmod 600`. None of the three output CSVs contain individual student PII (course/batch/session level). The placeholder SMTP addresses mean no run-report email leaves this pipeline — an availability concern, not a data exposure.
+
+**Removed 2026-09-28:** the standalone spot-check script (`attendance_crossvalidation.py`) and its `attendance_spotcheck.csv` output, per the project owner's decision — it was not part of the ordered Stage 1→2→3 run. The two functions it also supplied to Stage 3 (`fetch_org_attendances`, `sessions_to_dataframe`) moved into `build_session_attendance.py`, unchanged; verified against the live API (class_id 27255, the same 43 sessions, byte-identical output) before removal.
 
 ## 19. Raw API Payload (Captured Structure)
 
@@ -365,34 +358,8 @@ sessions inside the window. The `message` field is spelled `"Sucess"` by Edmingl
 }
 ```
 
-**Spot-check tool — attendance detail** (`GET .../bundle/general/attendancedet`, ISO-8601 dates):
-
-```json
-{
-  "code": "<int> (200)",
-  "message": "<str>",
-  "avg_attendance_data": {
-    "sessions_scheduled": "<int>",
-    "sessions_cancelled": "<int>",
-    "in_time_signins": "<int>",
-    "not_signed_ins": "<int>",
-    "total_signed_ins": "<int>",
-    "total_nonmandatory_sessions": "<int>",
-    "avg_attendance": "<int>"
-  }
-}
-```
-
-**Fixed 2026-09-25:** `fetch_attendance_summary()` used to send only an `apikey` header (plus the key in the URL) and got
-**HTTP 404 `"You are not a part of this org"`**. It now sends the `orgid`/`ORGID` headers too (via `auth_headers()`), takes
-the organization id as its second argument, and returns the payload above (verified live: 7 fields).
-
 ## 20. Future Improvements
 
 1. **Email the output on completion** — send a completion email that includes the run status *and* attaches the generated dataset file(s), not just a status notification.
 2. **Scheduled automation** — run automatically on a defined schedule instead of a manual trigger.
 3. **Data cleaning layer** — a dedicated cleaning step/script (nulls, duplicates, standardization) inside the pipeline, instead of leaving it to downstream consumers.
-
----
-*Initial documentation: 2026-09-24, including identification of legacy/orphaned output
-artifacts. Project/technical owner: requires confirmation.*

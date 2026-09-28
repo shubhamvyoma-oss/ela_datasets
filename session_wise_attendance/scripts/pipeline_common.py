@@ -8,7 +8,7 @@ USAGE
     from pipeline_common import (
         load_config, parse_retry_after_seconds, resolve_output_folder,
         RateLimiter, PipelineRunLogger, send_run_report, BASE_URL, auth_headers, require_config,
-        get_json, ApiError,
+        get_json, ApiError, load_processed_ids, append_rows_to_csv,
     )
 """
 
@@ -17,6 +17,8 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
 
 # The 4 entry-point scripts only add their own scripts/ folder to sys.path, not the
 # ela_datasets/ repo root -- so this module adds it itself before importing common.py.
@@ -104,6 +106,29 @@ def resolve_output_folder(config: dict, script_path: Path) -> Path:
         output_folder = (script_path.parent / ".." / "output" / output_folder).resolve()
     output_folder.mkdir(parents=True, exist_ok=True)
     return output_folder
+
+
+def load_processed_ids(out_path: Path, id_col: str) -> set:
+    """The set of id_col values already present in out_path from a prior (possibly interrupted) run
+    -- used by Stage 2 and Stage 3 to skip work already done."""
+    if not out_path.exists():
+        return set()
+    try:
+        existing_df = pd.read_csv(out_path, encoding="utf-8-sig")
+        if id_col in existing_df.columns:
+            return set(existing_df[id_col].dropna().astype(int).tolist())
+    except Exception as e:
+        print(f"[WARN] Could not read existing output for resume check: {e}")
+    return set()
+
+
+def append_rows_to_csv(rows, out_path: Path, columns: list | None = None) -> None:
+    """Appends rows (a DataFrame, or a list of dicts written in `columns` order) to out_path, writing
+    the header only if the file doesn't exist yet. Call after every unit of work so a crash, block or
+    Ctrl+C never loses progress already made."""
+    df = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame(rows, columns=columns)
+    write_header = not out_path.exists()
+    df.to_csv(out_path, mode="a", index=False, header=write_header, encoding="utf-8-sig")
 
 
 class RateLimiter:

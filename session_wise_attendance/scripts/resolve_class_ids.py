@@ -54,9 +54,11 @@ from pipeline_common import (
     ApiError,
     PipelineRunLogger,
     RateLimiter,
+    append_rows_to_csv,
     auth_headers,
     get_json,
     load_config,
+    load_processed_ids,
     require_config,
     resolve_output_folder,
     send_run_report,
@@ -112,28 +114,6 @@ def courses_array_to_records(courses_array: list) -> list:
     return records
 
 
-def load_already_processed(out_path: Path) -> set:
-    """Returns the set of batch_ids already present in the output
-    CSV from a prior (possibly interrupted) run."""
-    if not out_path.exists():
-        return set()
-    try:
-        existing_df = pd.read_csv(out_path, encoding="utf-8-sig")
-        if "batch_id" in existing_df.columns:
-            return set(existing_df["batch_id"].dropna().astype(int).tolist())
-    except Exception as e:
-        print(f"[WARN] Could not read existing output for resume check: {e}")
-    return set()
-
-
-def append_rows_to_csv(rows: list, out_path: Path):
-    """Appends rows to the output CSV, writing the header only if the file
-    doesn't exist yet. Called after EVERY batch so progress is never lost."""
-    df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
-    write_header = not out_path.exists()
-    df.to_csv(out_path, mode="a", index=False, header=write_header, encoding="utf-8-sig")
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Resolve class_id(s) for every batch in course_catalog.csv (Stage 2)")
@@ -187,7 +167,7 @@ def main():
         out_path.unlink()
         print(f"[INFO] --restart: removed existing {out_path}, starting fresh.")
 
-    already_processed = load_already_processed(out_path)
+    already_processed = load_processed_ids(out_path, "batch_id")
     if already_processed:
         print(f"[INFO] Resuming: {len(already_processed)} batches already resolved in "
               f"{out_path.name}, skipping those.")
@@ -235,7 +215,7 @@ def main():
             } for cr in class_records]
 
             # Write immediately — this is what makes the run resumable.
-            append_rows_to_csv(rows_to_write, out_path)
+            append_rows_to_csv(rows_to_write, out_path, columns=OUTPUT_COLUMNS)
             limiter.wait()
 
     print(f"\n[RESULT] Run complete. Output at {out_path.resolve()}")

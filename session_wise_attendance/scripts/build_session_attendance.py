@@ -3,14 +3,14 @@ build_session_attendance.py
 --------------------------------------------------------------------------
 STAGE 3. Reads class_id_lookup.csv (from resolve_class_ids.py) and pulls
 session-wise attendance for EVERY class_id in it via /organization/attendances.
-Output: session_wise_attendance_data.csv. See RULES.md § Stage 3 for the
+Output: session_wise_attendance_data.csv. See SESSION_WISE_ATTENDANCE.md for the
 session-status->conducted mapping, IST conversion rule, and session_number
 numbering rule.
 
 RATE LIMITING (Edmingle allows max 30 calls/min):
   - Calls spaced at a safe ~24/min by default (--calls_per_minute to tune).
-  - fetch_org_attendances (imported from attendance_crossvalidation.py) now
-    handles 429s by waiting out Edmingle's own reported block duration.
+  - fetch_org_attendances handles 429s by waiting out Edmingle's own reported
+    block duration (see pipeline_common.get_json).
 
 CHECKPOINT / RESUME:
   - Every class_id's resolved session rows are appended to the output CSV
@@ -46,11 +46,16 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from attendance_crossvalidation import SESSION_BASE_COLUMNS, fetch_org_attendances, sessions_to_dataframe
 from pipeline_common import (
+    BASE_URL,
+    ApiError,
     PipelineRunLogger,
     RateLimiter,
+    append_rows_to_csv,
+    auth_headers,
+    get_json,
     load_config,
+    load_processed_ids,
     require_config,
     resolve_output_folder,
     send_run_report,
@@ -59,10 +64,22 @@ from pipeline_common import (
 STAGE_NAME = "build_session_attendance"
 SCRIPT_DIR = Path(__file__).parent
 DEFAULT_CALLS_PER_MINUTE = 24  # safety margin under Edmingle's 30/min limit
+ORG_ATTENDANCES_ENDPOINT = f"{BASE_URL}/organization/attendances"
+IST_OFFSET_SECONDS = 5.5 * 3600
 
-# Final Stage 3 output column order — SESSION_BASE_COLUMNS (from
-# attendance_crossvalidation.py) plus bundle_id/bundle_name, which only
-# this stage can add (sourced from class_id_lookup.csv).
+# Class-level status codes (0-7) confirmed against the classroom UI; only the
+# not-conducted set is needed here.
+NOT_CONDUCTED_STATUSES = {2, 3}  # Postponed, Cancelled
+
+# Base session columns, plus bundle_id/bundle_name (sourced from class_id_lookup.csv, this
+# stage's own input) inserted just before the date fields.
+SESSION_BASE_COLUMNS = [
+    "session_id", "class_id", "class_name", "master_batch_id", "master_batch_name",
+    "class_date", "total_enrolled_at_session", "present", "not_marked", "attendance_pct",
+    "taken_by_name", "individual_batch_attendance",
+    "session_start_ist", "session_end_ist", "session_duration_min",
+    "session_conducted", "session_number",
+]
 _split_at = SESSION_BASE_COLUMNS.index("class_date")
 MASTER_OUTPUT_COLUMNS = (
     SESSION_BASE_COLUMNS[:_split_at] + ["bundle_id", "bundle_name"] + SESSION_BASE_COLUMNS[_split_at:]
@@ -77,22 +94,101 @@ def to_unix(date_str: str) -> int:
     return int(utc_dt.timestamp() - ist_offset_seconds)
 
 
-def load_already_processed(out_path: Path) -> set:
-    """class_ids already present in the output CSV from a prior run."""
-    if not out_path.exists():
-        return set()
+def unix_to_ist(ts, fmt: str = "%Y-%m-%d %H:%M:%S"):
+    """Convert a UTC unix timestamp to an IST-formatted string.
+    Manual +5:30 offset (not zoneinfo/pytz) to avoid tzdata dependency issues
+    on Windows."""
+    if ts is None:
+        return None
+    dt = datetime.fromtimestamp(ts + IST_OFFSET_SECONDS, tz=UTC)
+    return dt.strftime(fmt)
+
+
+def fetch_org_attendances(apikey: str, org_id: int, start_ts: int, end_ts: int,
+                           class_id: int = None, max_retries: int = 3) -> list:
+    """Calls /organization/attendances. class_id is optional — omit for an org-wide pull across the date
+    window (heavier, use with caution on wide date ranges). Returns [] if the call keeps failing.
+    RATE LIMIT: on a 429 this waits out Edmingle's own reported block duration (pipeline_common.get_json)."""
+    params = {"org_id": org_id, "start": start_ts, "end": end_ts}
+    if class_id is not None:
+        params["class_id"] = class_id
     try:
-        existing_df = pd.read_csv(out_path, encoding="utf-8-sig")
-        if "class_id" in existing_df.columns:
-            return set(existing_df["class_id"].dropna().astype(int).tolist())
-    except Exception as e:
-        print(f"[WARN] Could not read existing output for resume check: {e}")
-    return set()
+        data = get_json(ORG_ATTENDANCES_ENDPOINT, auth_headers(apikey, org_id), params,
+                        attempts=max_retries, label=f"class_id={class_id}")
+    except ApiError as error:
+        print(f"[ERROR] {error} -- returning empty result")
+        return []
+    if data.get("code") != 200:
+        print(f"[WARN] API returned non-200 code: {data.get('code')} message={data.get('message')}")
+        return []
+    return data.get("classes", [])
 
 
-def append_df_to_csv(df: pd.DataFrame, out_path: Path):
-    write_header = not out_path.exists()
-    df.to_csv(out_path, mode="a", index=False, header=write_header, encoding="utf-8-sig")
+def sessions_to_dataframe(classes: list) -> pd.DataFrame:
+    """Extract the session-wise fields relevant to reporting. ALL date/time fields below are
+    converted to IST before being written out -- the raw fields from Edmingle (class_date,
+    gmt_start_time, gmt_end_time) are UTC unix timestamps and are NOT written to the CSV directly,
+    only their IST-converted counterparts.
+
+    Field mapping (from empirical exploration against the classroom UI):
+      id                 -> session identifier
+      class_id           -> subject/stream id (overloaded field — NOT the batch key)
+      class_name          -> subject/stream display name
+      master_batch_id     -> ACTUAL batch id — use this to join against course_catalog.csv
+      master_batch_name   -> batch display name (note: often has a leading space in source data)
+      class_date          -> IST calendar date, derived from unix timestamp + 5:30
+      gmt_start_time/end  -> converted to IST session_start_ist / session_end_ist datetimes
+      total                -> enrollment count AT THAT SESSION (matches UI denominator)
+      present              -> present count (matches UI numerator)
+      not_marked           -> total - present - absent, roughly
+      taken_by_name        -> tutor who conducted the session
+      individual_batch_attendance -> 0/1 flag: whether attendance is tracked per-individual-batch
+                                      vs shared/broadcast across batches
+      status                -> raw Edmingle status code, used only to derive session_conducted
+                                (not written out)
+    """
+    rows = []
+    for c in classes:
+        gmt_start = c.get("gmt_start_time")
+        gmt_end = c.get("gmt_end_time")
+        rows.append({
+            "session_id": c.get("id"),
+            "class_id": c.get("class_id"),
+            "class_name": c.get("class_name"),
+            "master_batch_id": c.get("master_batch_id"),
+            "master_batch_name": (
+                c.get("master_batch_name").strip()
+                if isinstance(c.get("master_batch_name"), str) else c.get("master_batch_name")
+            ),
+            "class_date": unix_to_ist(c.get("class_date"), "%Y-%m-%d"),
+            "session_start_ist": unix_to_ist(gmt_start),
+            "session_end_ist": unix_to_ist(gmt_end),
+            "session_duration_min": (
+                round((gmt_end - gmt_start) / 60, 1) if gmt_start and gmt_end else None
+            ),
+            "total_enrolled_at_session": c.get("total"),
+            "present": c.get("present"),
+            "not_marked": c.get("not_marked"),
+            "attendance_pct": (
+                round(100 * c["present"] / c["total"], 2)
+                if c.get("total") else None
+            ),
+            "taken_by_name": c.get("taken_by_name"),
+            "individual_batch_attendance": c.get("individual_batch_attendance"),
+            "session_conducted": c.get("status") not in NOT_CONDUCTED_STATUSES,
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["session_id"] = df["session_id"].astype("Int64")
+        df["class_id"] = df["class_id"].astype("Int64")
+        df["master_batch_id"] = df["master_batch_id"].astype("Int64")
+        # Sort by actual IST session start rather than the (now-removed) raw unix column
+        df = df.sort_values("session_start_ist").reset_index(drop=True)
+        # Sequential count within each batch, chronological. Every API row is a PLANNED
+        # session (Edmingle only returns scheduled slots) -- session_conducted says whether it happened.
+        df["session_number"] = df.groupby("master_batch_id").cumcount() + 1
+        df = df[SESSION_BASE_COLUMNS]
+    return df
 
 
 def main():
@@ -151,7 +247,7 @@ def main():
         out_path.unlink()
         print(f"[INFO] --restart: removed existing {out_path}, starting fresh.")
 
-    already_processed = load_already_processed(out_path)
+    already_processed = load_processed_ids(out_path, "class_id")
     if already_processed:
         print(f"[INFO] Resuming: {len(already_processed)} class_ids already pulled in "
               f"{out_path.name}, skipping those.")
@@ -197,7 +293,7 @@ def main():
                     session_df["bundle_id"] = row.bundle_id
                     session_df["bundle_name"] = row.bundle_name
                     session_df = session_df[MASTER_OUTPUT_COLUMNS]
-                    append_df_to_csv(session_df, out_path)
+                    append_rows_to_csv(session_df, out_path)
                     n_rows_written += len(session_df)
                 else:
                     n_no_sessions += 1
