@@ -212,11 +212,20 @@ def send_mail(notifications: dict, subject: str, body: str,
 # ------------------------------------------------------------ rate limiter
 
 class RollingRateLimiter:
-    """A true rolling-window rate limiter (deque of call timestamps), not a
-    flat delay between calls -- acquire() blocks only long enough to keep
-    the call count within `max_calls` per `window_seconds`. reset() clears
-    history (e.g. after a 429 cooldown, so resuming doesn't immediately
-    re-trip the limit).
+    """A rolling-window rate limiter (deque of call timestamps) that also spaces calls
+    evenly, not just capped: acquire() enforces both "at least window_seconds/max_calls
+    between consecutive calls" and "never more than max_calls calls in any window_seconds
+    window". reset() clears history (e.g. after a 429 cooldown, so resuming doesn't
+    immediately re-trip the limit).
+
+    The even spacing (added 2026-09-29) matters because the rolling-window cap alone lets
+    every allowed call fire back-to-back until the count is reached, then pause -- e.g. 30
+    calls in ~10 seconds rather than spread across the full 60. Edmingle's own rate limiter
+    reacts to that burst, not just the 60-second average, so a run using only the cap would
+    hit a 429 almost immediately after every restart/resume (observed repeatedly on
+    ela_mis_datasets: a 429, a 30-minute lockout, then another 429 within a minute of
+    resuming). Even spacing is what attendance.py's own flat `rate_limit_sleep_seconds`
+    delay already does successfully; this makes every RollingRateLimiter user do the same.
 
     Previously duplicated (with an injectable clock=/sleep= pair that no
     test in the repo ever overrode) across enrollments_reports,
@@ -228,6 +237,7 @@ class RollingRateLimiter:
                  logger: logging.Logger | None = None) -> None:
         self.max_calls = max_calls
         self.window_seconds = window_seconds
+        self.min_interval = window_seconds / max_calls
         self.logger = logger or logging.getLogger(__name__)
         self.calls: deque[float] = deque()
 
@@ -236,6 +246,11 @@ class RollingRateLimiter:
             now = time.monotonic()
             while self.calls and now - self.calls[0] >= self.window_seconds:
                 self.calls.popleft()
+            if self.calls and now - self.calls[-1] < self.min_interval:
+                wait_seconds = self.min_interval - (now - self.calls[-1])
+                self.logger.debug(f"Rate-limit pacing wait: {wait_seconds:.2f} seconds")
+                time.sleep(wait_seconds)
+                continue
             if len(self.calls) < self.max_calls:
                 self.calls.append(now)
                 return
