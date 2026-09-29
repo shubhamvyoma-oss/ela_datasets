@@ -28,6 +28,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -37,15 +38,46 @@ sys.pycache_prefix = os.path.normpath(
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from edmingle_api import PermanentAPIError, fetch_page
-from edmingle_constants import DATE_FMT, FIELDS
-
 import common
-from common import RollingRateLimiter, format_duration
+from common import PermanentAPIError, RollingRateLimiter, format_duration, get_json
 
 # ── CONFIG ──
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+ENROLLMENT_PATH = "/reports/enrollment"  # appended to edmingle.base_url from credentials.yaml
+ENROLLMENT_URL = common.edmingle_settings()["base_url"] + ENROLLMENT_PATH
+
+DATE_FMT = "%d-%m-%Y"  # DD-MM-YYYY, the format Edmingle's API expects
+
+# Column order for the output CSV. Matches the fields Edmingle returns in
+# "studentlist" for report_details_type=3. If Edmingle adds/removes fields,
+# update this list to match — unknown fields are dropped, missing fields are
+# written as blank rather than crashing the run.
+FIELDS = [
+    "enrollment_id",
+    "enrollment_day",
+    "user_id",
+    "name",
+    "email",
+    "contact_number",
+    "contact_number_country_id",
+    "state",
+    "registration_number",
+    "learner_type",
+    "enrollment_mode",
+    "enrollment_status",
+    "bundle_id",
+    "bundle_name",
+    "batch_ids",
+    "batches",
+    "product_type",
+    "product_type_label",
+    "platform_type",
+    "enrollment_expiration_date",
+    "shipping_details_json",
+    "preferred_categories",
+]
 
 # Defaults for every run; no CLI flag -- override in enrollments_reports_config.json (next to
 # this script) if ever needed.
@@ -113,6 +145,54 @@ def build_chunks(start_date: str, end_date: str, chunk_days: int) -> list[tuple[
 def count_rows(path: Path) -> int:
     with path.open(newline="", encoding="utf-8") as fh:
         return sum(1 for _ in csv.reader(fh))
+
+
+# ── API LAYER ──
+
+
+def _valid(data: Any) -> bool:
+    return (isinstance(data, dict) and data.get("code") == 200
+            and isinstance(data.get("result", {}).get("studentlist"), list))
+
+
+def fetch_page(
+    session: requests.Session,
+    api_key: str,
+    org_id: int,
+    chunk_start: str,
+    chunk_end: str,
+    page: int,
+    per_page: int,
+    *,
+    timeout: float,
+    initial_retry_delay: float,
+    maximum_retry_delay: float,
+    rate_limit_block_seconds: float,
+    rate_limiter: RollingRateLimiter,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """Fetches a single (chunk, page) from Edmingle's enrollment report endpoint through
+    common.get_json: permanent errors (400/401/403/404) raise immediately; a 429 waits
+    rate_limit_block_seconds and resets the rate limiter; everything else transient retries forever
+    with capped exponential backoff (a permanent error stops the run with an email, and the chunk
+    files make a restart cheap)."""
+    params = {
+        "start_date": chunk_start,
+        "end_date": chunk_end,
+        "time_step": 1,
+        "report_details_type": 3,
+        "page": page,
+        "per_page": per_page,
+        "sort_order": "D",
+        "sort_by": "date_of_enrolment",
+        "currency_id": 1,
+    }
+    return get_json(
+        ENROLLMENT_URL, headers={"apikey": api_key, "orgid": str(org_id)}, params=params, session=session,
+        timeout=timeout, delay=initial_retry_delay, max_delay=maximum_retry_delay,
+        block_seconds=rate_limit_block_seconds, rate_limiter=rate_limiter, validate=_valid,
+        label=f"[chunk {chunk_start}..{chunk_end} page {page}]", logger=logger,
+    )
 
 
 # ── EXPORT RUN ──

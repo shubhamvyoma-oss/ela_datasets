@@ -34,9 +34,7 @@ downstream script within this repo consumes it.
 
 | Path | Purpose |
 |---|---|
-| `scripts/edmingle_export.py` | Orchestrator — chunk windows, per-chunk download, joining, logging, the `EdmingleExportRun` class. |
-| `scripts/edmingle_api.py` | `fetch_page()` — one (chunk, page) GET through `common.get_json` (error classification, 429 backoff). |
-| `scripts/edmingle_constants.py` | `ENROLLMENT_PATH` (appended to `credentials.yaml`'s `base_url`), date format, output column order. |
+| `scripts/edmingle_export.py` | The whole pipeline in one file: chunk windows, `fetch_page()` (one (chunk, page) GET through `common.get_json`, error classification, 429 backoff), per-chunk download, joining, logging, the `EdmingleExportRun` class. |
 | `output/edmingle_enrollment_report.csv` | Fixed-name output (8,573 lines incl. header, last written 2026-09-08). |
 | `output/edmingle_enrollment_report.chunks/` | One `<start>_<end>.csv` per finished chunk (plus a `.part` file while one is downloading); exists only while a run is unfinished, then deleted. |
 | `output/edmingle_enrollment_report.log` | Run log. `*.checkpoint.json` / `*.chunks.json` files from the old design (before 2026-09-25) are no longer used and can be deleted. |
@@ -162,7 +160,7 @@ None. The former `edmingle_watchdog.sh` (auto-restart) was **removed 2026-09-23*
 
 - **Chunk size/rate limits/retry behavior** → `scripts/enrollments_reports_config.json` (the defaults live in the `DEFAULTS` dict in `edmingle_export.py`; no CLI flag).
 - **Email wording** → `../notification_messages.yaml`.
-- **Output columns** → `FIELDS` in `edmingle_constants.py`.
+- **Output columns** → `FIELDS` in `edmingle_export.py`.
 - **Permanent vs. transient classification** → `common.get_json`'s `permanent` default.
 - **Investigate the unexplained large CSV** → check server access logs around 2026-09-24 00:24–00:25 UTC for any manual command that could have placed it there.
 
