@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+# ── SETUP ──
+
 # Standard library — file, system, network, data handling
 import argparse
 import csv
@@ -41,6 +43,8 @@ from common import (
     utc_now,
 )
 
+# ── CONFIG & CONSTANTS ──
+
 # All output/state/log files resolve relative to this script's own folder, not the caller's cwd.
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -56,6 +60,8 @@ def _load_notifications_config() -> dict[str, Any]:
     return common.load_notifications("ela_mis_datasets")
 
 
+# ── NOTIFICATIONS ──
+
 _notifications_config = _load_notifications_config()
 _email_config = (_notifications_config.get("channels", {}) or {}).get("email", {}) or {}
 _smtp_config = _email_config.get("smtp", {}) or {}
@@ -67,6 +73,8 @@ STATUS_UPDATE_INTERVAL = int(
     float(_email_config.get("status_update_interval_hours", 6)) * 3600
 )
 
+
+# ── SCHEMA ──
 
 # Columns saved to edmingle_students.csv — one row per student
 STUDENT_FIELDS = [
@@ -134,6 +142,8 @@ COURSE_FIELDS = [
 ]
 
 
+# ── FILES & ENDPOINTS ──
+
 # Default output file names, all in output/
 DEFAULT_FILES = {
     "student_master":  "edmingle_students.csv",                       # final student output
@@ -149,6 +159,9 @@ STUDENTS_URL = f"{_BASE_URL}/organization/students"
 COURSES_URL  = f"{_BASE_URL}/admin/classes/attendance"
 
 
+# ── EMAIL HELPERS ──
+
+
 def send_email_alert(subject: str, body: str) -> None:
     # Delegates to common.send_mail() -- never raises, logs a warning and returns instead,
     # so email failure never crashes the pipeline.
@@ -159,6 +172,9 @@ def send_email_alert(subject: str, body: str) -> None:
 def _send_message(key: str, **values: Any) -> None:
     # The wording of every email lives in ../notification_messages.yaml.
     send_email_alert(*common.render_message("ela_mis_datasets", key, **values))
+
+
+# ── STARTUP CHECKS ──
 
 
 def _roster_row_count() -> int:
@@ -211,6 +227,8 @@ def run_startup_checks(config: dict[str, Any]) -> int:
 
 PermanentAPIError = common.PermanentAPIError  # HTTP 400/401/403/404 -- retrying will never help
 
+# ── HELPERS ──
+
 
 def calculate_start_page(last_completed_page: int, overlap_pages: int) -> int:
     # Go back N pages from last run to catch students who registered during that run
@@ -257,6 +275,8 @@ def extract_student(student: dict[str, Any]) -> dict[str, Any]:
                 row[field] = by_name[source_name]
     return row
 
+
+# ── SYNC ENGINE ──
 
 # Core pipeline -- student data fetch and course enrollment fetch. Original logic by
 # Shankararama Sharma; only run() was modified since. RollingRateLimiter itself lives in common.py.
@@ -451,91 +471,85 @@ class EdmingleSync:
         self.logger.info("Resuming course refresh at student %d of %d", int(refresh["next_student_index"]) + 1, total)
         return False
 
-    def sync_courses(self, state: dict[str, Any]) -> None:
-        # Main course enrollment loop — 1 API call per student
-        # Saves checkpoint after each student so any crash is resumable
+    def _prepare_course_refresh(self, state: dict[str, Any]):
+        """(refresh, users) to start/resume from, or (None, users) if an interrupted refresh
+        turned out to already be complete (sync_courses should return immediately)."""
         refresh = state.get("course_refresh", {"in_progress": False})
         users = self._valid_course_users()
         if not refresh.get("in_progress"):
             refresh = self._start_course_refresh(state, users)
         elif self._resume_course_refresh(state, refresh, users):
-            return
-        next_index = int(refresh["next_student_index"])
-        session_started_at = time.monotonic()
+            return None, users
+        return refresh, users
 
-        with self.paths["course_progress"].open("a", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=COURSE_FIELDS, extrasaction="ignore")
-            for index in range(next_index, len(users)):
-                user    = users[index]
-                user_id = user["user_id"]
+    def _fetch_student_courses(self, writer: csv.DictWriter, user: dict[str, str]) -> None:
+        """Fetches all enrolled class sessions for one student and writes one row per session."""
+        user_id = user["user_id"]
+        data    = self.request_json(
+            COURSES_URL,
+            params={"user_id": user_id, "response_type": 1},
+            expected_list_key="classes",
+            context=f"course user_id {user_id}",
+        )
+        classes = data["classes"]
+        for course in classes:
+            row = {
+                "user_id": user_id,
+                "name":    user.get("name", ""),
+                "email":   user.get("email", ""),
+            }
+            row.update(course)
+            writer.writerow(row)
 
-                # Fetch all enrolled class sessions for this student
-                data    = self.request_json(
-                    COURSES_URL,
-                    params={"user_id": user_id, "response_type": 1},
-                    expected_list_key="classes",
-                    context=f"course user_id {user_id}",
-                )
-                classes = data["classes"]
+    def _update_course_checkpoint(self, state, refresh, index, user_id, session_started_at, total):
+        """Saves progress after one student and logs an ETA every 100 students. Returns
+        (refresh, new_session_started_at, active_elapsed) for the next loop iteration."""
+        refresh["next_student_index"]     = index + 1
+        refresh["output_offset"]          = self.paths["course_progress"].stat().st_size
+        refresh["last_completed_user_id"] = user_id
+        active_elapsed                    = float(refresh.get("active_elapsed_seconds", 0.0))
+        active_elapsed                   += time.monotonic() - session_started_at
+        refresh["active_elapsed_seconds"] = active_elapsed
+        session_started_at                = time.monotonic()
+        state["course_refresh"]           = refresh
+        self.save_state(state)  # atomic checkpoint save to disk
 
-                # Write one row per class session for this student
-                for course in classes:
-                    row = {
-                        "user_id": user_id,
-                        "name":    user.get("name", ""),
-                        "email":   user.get("email", ""),
-                    }
-                    row.update(course)
-                    writer.writerow(row)
+        completed = index + 1
+        if completed == 1 or completed % 100 == 0 or completed == total:
+            average_seconds     = active_elapsed / completed
+            estimated_remaining = average_seconds * (total - completed)
+            self.logger.info(
+                "Course checkpoint saved: %d/%d students; elapsed %s; "
+                "estimated remaining %s",
+                completed,
+                total,
+                format_duration(active_elapsed),
+                format_duration(estimated_remaining),
+            )
+        return refresh, session_started_at, active_elapsed
 
-                # Flush to physical disk after every student — survives a crash
-                handle.flush()
-                os.fsync(handle.fileno())
+    def _maybe_send_status_update(self, refresh, completed, total, active_elapsed) -> None:
+        """Sends a status email every STATUS_UPDATE_INTERVAL seconds of active processing time --
+        so you know the run is alive. The interval is configured in notifications.yaml
+        (status_update_interval_hours), not hardcoded here -- see module-level STATUS_UPDATE_INTERVAL.
+        Mutates `refresh` in place (the same dict object already saved onto state["course_refresh"]
+        by _update_course_checkpoint), matching this method's pre-split behavior exactly."""
+        last_update = refresh.get("last_status_email_at", 0.0)
+        if active_elapsed - last_update >= STATUS_UPDATE_INTERVAL:
+            pct             = (completed / total) * 100
+            free_gb         = shutil.disk_usage(SCRIPT_DIR).free / (1024 ** 3)
+            avg_sec         = active_elapsed / completed if completed > 0 else 0
+            est_remaining   = avg_sec * (total - completed)
+            _send_message(
+                "status_update", pct=pct, completed=completed, total=total,
+                elapsed=format_duration(active_elapsed), remaining=format_duration(est_remaining),
+                free_gb=free_gb,
+            )
+            # Save timestamp so next update fires STATUS_UPDATE_INTERVAL from now
+            refresh["last_status_email_at"] = active_elapsed
+            self.logger.info("Status update email sent at %.1f%% complete", pct)
 
-                # Update checkpoint — next resume starts from index + 1
-                refresh["next_student_index"]     = index + 1
-                refresh["output_offset"]          = self.paths["course_progress"].stat().st_size
-                refresh["last_completed_user_id"] = user_id
-                active_elapsed                    = float(refresh.get("active_elapsed_seconds", 0.0))
-                active_elapsed                   += time.monotonic() - session_started_at
-                refresh["active_elapsed_seconds"] = active_elapsed
-                session_started_at                = time.monotonic()
-                state["course_refresh"]           = refresh
-                self.save_state(state)  # atomic checkpoint save to disk
-
-                # Log progress every 100 students with elapsed time and ETA
-                completed = index + 1
-                if completed == 1 or completed % 100 == 0 or completed == len(users):
-                    average_seconds     = active_elapsed / completed
-                    estimated_remaining = average_seconds * (len(users) - completed)
-                    self.logger.info(
-                        "Course checkpoint saved: %d/%d students; elapsed %s; "
-                        "estimated remaining %s",
-                        completed,
-                        len(users),
-                        format_duration(active_elapsed),
-                        format_duration(estimated_remaining),
-                    )
-
-                # Send status update email every STATUS_UPDATE_INTERVAL seconds of
-                # active processing time — so you know run is alive. The interval
-                # is configured in notifications.yaml (status_update_interval_hours),
-                # not hardcoded here — see module-level STATUS_UPDATE_INTERVAL.
-                last_update = refresh.get("last_status_email_at", 0.0)
-                if active_elapsed - last_update >= STATUS_UPDATE_INTERVAL:
-                    pct             = (completed / len(users)) * 100
-                    free_gb         = shutil.disk_usage(SCRIPT_DIR).free / (1024 ** 3)
-                    avg_sec         = active_elapsed / completed if completed > 0 else 0
-                    est_remaining   = avg_sec * (len(users) - completed)
-                    _send_message(
-                        "status_update", pct=pct, completed=completed, total=len(users),
-                        elapsed=format_duration(active_elapsed), remaining=format_duration(est_remaining),
-                        free_gb=free_gb,
-                    )
-                    # Save timestamp so next update fires STATUS_UPDATE_INTERVAL from now
-                    refresh["last_status_email_at"] = active_elapsed
-                    self.logger.info("Status update email sent at %.1f%% complete", pct)
-
+    def _finalize_course_refresh(self, state: dict[str, Any], users: list[dict[str, str]]) -> None:
         # Atomically rename progress file to final output filename
         os.replace(self.paths["course_progress"], self.paths["course_master"])
         state["course_refresh"] = {
@@ -545,6 +559,32 @@ class EdmingleSync:
         }
         self.save_state(state)
         self.logger.info("Published complete course enrollment master")
+
+    def sync_courses(self, state: dict[str, Any]) -> None:
+        # Main course enrollment loop — 1 API call per student
+        # Saves checkpoint after each student so any crash is resumable
+        refresh, users = self._prepare_course_refresh(state)
+        if refresh is None:
+            return
+        next_index = int(refresh["next_student_index"])
+        session_started_at = time.monotonic()
+
+        with self.paths["course_progress"].open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=COURSE_FIELDS, extrasaction="ignore")
+            for index in range(next_index, len(users)):
+                user = users[index]
+                self._fetch_student_courses(writer, user)
+
+                # Flush to physical disk after every student — survives a crash
+                handle.flush()
+                os.fsync(handle.fileno())
+
+                refresh, session_started_at, active_elapsed = self._update_course_checkpoint(
+                    state, refresh, index, user["user_id"], session_started_at, len(users)
+                )
+                self._maybe_send_status_update(refresh, index + 1, len(users), active_elapsed)
+
+        self._finalize_course_refresh(state, users)
 
     def run(self) -> None:
         # Top level orchestrator — runs student sync then course sync
@@ -563,6 +603,9 @@ class EdmingleSync:
         self.sync_courses(self.load_state())
         self.logger.info("Edmingle sync run completed")
         _send_message("full_sync_completed")
+
+
+# ── LOGGING ──
 
 
 def configure_logging(log_path: Path) -> logging.Logger:
@@ -584,6 +627,8 @@ def configure_logging(log_path: Path) -> logging.Logger:
 
     return logger
 
+
+# ── MAIN ──
 
 # Usage: python3 edmingle_student_course_sync.py --config /path/to/config.json
 def parse_args() -> argparse.Namespace:

@@ -26,6 +26,8 @@ USAGE
     python build_session_attendance.py --start 2010-01-01 --end 2026-08-24 --restart
 """
 
+# ── SETUP ──
+
 import argparse
 import os
 import sys
@@ -62,6 +64,8 @@ from pipeline_common import (
     send_run_report,
 )
 
+# ── CONFIG ──
+
 STAGE_NAME = "build_session_attendance"
 SCRIPT_DIR = Path(__file__).parent
 DEFAULT_CALLS_PER_MINUTE = PIPELINE_CONFIG["calls_per_minute"]  # safety margin under Edmingle's 30/min limit
@@ -87,6 +91,9 @@ MASTER_OUTPUT_COLUMNS = (
 )
 
 
+# ── HELPERS ──
+
+
 def to_unix(date_str: str) -> int:
     """Parse YYYY-MM-DD as IST midnight -> unix timestamp."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -103,6 +110,9 @@ def unix_to_ist(ts, fmt: str = "%Y-%m-%d %H:%M:%S"):
         return None
     dt = datetime.fromtimestamp(ts + IST_OFFSET_SECONDS, tz=UTC)
     return dt.strftime(fmt)
+
+
+# ── API LAYER ──
 
 
 def fetch_org_attendances(apikey: str, org_id: int, start_ts: int, end_ts: int,
@@ -123,6 +133,9 @@ def fetch_org_attendances(apikey: str, org_id: int, start_ts: int, end_ts: int,
         print(f"[WARN] API returned non-200 code: {data.get('code')} message={data.get('message')}")
         return []
     return data.get("classes", [])
+
+
+# ── TRANSFORM ──
 
 
 def sessions_to_dataframe(classes: list) -> pd.DataFrame:
@@ -192,7 +205,10 @@ def sessions_to_dataframe(classes: list) -> pd.DataFrame:
     return df
 
 
-def main():
+# ── MAIN ──
+
+
+def _parse_args():
     parser = argparse.ArgumentParser(
         description="Pull session-wise attendance for every class_id in class_id_lookup.csv (Stage 3)")
     parser.add_argument("--in", dest="input_file", type=str, default="class_id_lookup.csv")
@@ -205,18 +221,11 @@ def main():
     parser.add_argument("--restart", action="store_true",
                          help="Ignore existing progress and start fresh (overwrites previous output)")
     parser.add_argument("--apikey", type=str, default=None)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    config = load_config(SCRIPT_DIR)
-    apikey = args.apikey or config.get("api_key")
-    org_id = require_config(config, "org_id")
 
-    output_folder = resolve_output_folder(config, Path(__file__))
-
-    if not apikey:
-        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
-        sys.exit(1)
-
+def _load_lookup(args, output_folder: Path) -> pd.DataFrame:
+    """Loads, validates and dedups class_id_lookup.csv. Exits on a missing file or missing columns."""
     input_path = Path(args.input_file)
     if not input_path.is_absolute() and not input_path.exists():
         candidate = output_folder / args.input_file
@@ -240,10 +249,11 @@ def main():
     if unresolved:
         print(f"[NOTE] Skipping {unresolved} rows with no resolved class_id "
               f"(self-paced/archived content with no attendance-trackable subject).")
-    lookup_df = lookup_df.dropna(subset=["class_id"]).drop_duplicates(subset=["class_id"])
+    return lookup_df.dropna(subset=["class_id"]).drop_duplicates(subset=["class_id"])
 
-    out_path = output_folder / args.out
 
+def _apply_resume_and_limit(args, lookup_df: pd.DataFrame, out_path: Path) -> pd.DataFrame:
+    """Applies --restart, then skips already-pulled class_ids, then --limit, in that order."""
     if args.restart and out_path.exists():
         out_path.unlink()
         print(f"[INFO] --restart: removed existing {out_path}, starting fresh.")
@@ -257,52 +267,63 @@ def main():
     if args.limit:
         lookup_df = lookup_df.head(args.limit)
 
+    return lookup_df
+
+
+def _pull_all_class_attendance(lookup_df: pd.DataFrame, apikey: str, org_id: int, args, out_path: Path):
+    """Runs the rate-limited per-class_id attendance pull, writing each result immediately so the
+    run stays resumable. Returns (n_classes, n_no_sessions, n_errors, n_rows_written)."""
     n_classes = len(lookup_df)
-    start_time = datetime.now()
     n_no_sessions = 0
     n_errors = 0
     n_rows_written = 0
 
     if n_classes == 0:
         print("[INFO] Nothing left to process — all class_ids already pulled.")
-    else:
-        limiter = RateLimiter(args.calls_per_minute)
-        est_seconds = n_classes * limiter.delay_seconds
-        print(f"[INFO] Pulling attendance for {n_classes} remaining class_ids "
-              f"at {args.calls_per_minute:.0f} calls/min "
-              f"(rough estimate: ~{est_seconds/60:.1f} min, before any rate-limit waits)")
+        return n_classes, n_no_sessions, n_errors, n_rows_written
 
-        start_ts = to_unix(args.start)
-        end_ts = to_unix(args.end)
+    limiter = RateLimiter(args.calls_per_minute)
+    est_seconds = n_classes * limiter.delay_seconds
+    print(f"[INFO] Pulling attendance for {n_classes} remaining class_ids "
+          f"at {args.calls_per_minute:.0f} calls/min "
+          f"(rough estimate: ~{est_seconds/60:.1f} min, before any rate-limit waits)")
 
-        for i, row in enumerate(lookup_df.itertuples(index=False), 1):
-            class_id = int(row.class_id)
-            print(f"  [{i}/{n_classes}] class_id={class_id} "
-                  f"(batch_id={row.batch_id}, {row.batch_name})")
+    start_ts = to_unix(args.start)
+    end_ts = to_unix(args.end)
 
-            limiter.start()
-            try:
-                classes = fetch_org_attendances(apikey, org_id, start_ts, end_ts, class_id)
-            except Exception as e:
-                print(f"    [ERROR] fetch failed for class_id={class_id}: {e}")
-                n_errors += 1
-                classes = []
+    for i, row in enumerate(lookup_df.itertuples(index=False), 1):
+        class_id = int(row.class_id)
+        print(f"  [{i}/{n_classes}] class_id={class_id} "
+              f"(batch_id={row.batch_id}, {row.batch_name})")
 
-            if classes:
-                session_df = sessions_to_dataframe(classes)
-                if not session_df.empty:
-                    session_df["bundle_id"] = row.bundle_id
-                    session_df["bundle_name"] = row.bundle_name
-                    session_df = session_df[MASTER_OUTPUT_COLUMNS]
-                    append_rows_to_csv(session_df, out_path)
-                    n_rows_written += len(session_df)
-                else:
-                    n_no_sessions += 1
+        limiter.start()
+        try:
+            classes = fetch_org_attendances(apikey, org_id, start_ts, end_ts, class_id)
+        except Exception as e:
+            print(f"    [ERROR] fetch failed for class_id={class_id}: {e}")
+            n_errors += 1
+            classes = []
+
+        if classes:
+            session_df = sessions_to_dataframe(classes)
+            if not session_df.empty:
+                session_df["bundle_id"] = row.bundle_id
+                session_df["bundle_name"] = row.bundle_name
+                session_df = session_df[MASTER_OUTPUT_COLUMNS]
+                append_rows_to_csv(session_df, out_path)
+                n_rows_written += len(session_df)
             else:
                 n_no_sessions += 1
+        else:
+            n_no_sessions += 1
 
-            limiter.wait()
+        limiter.wait()
 
+    return n_classes, n_no_sessions, n_errors, n_rows_written
+
+
+def _report_results(out_path: Path, n_classes: int, n_no_sessions: int, n_errors: int,
+                    n_rows_written: int, start_time: datetime, config: dict) -> None:
     print(f"\n[RESULT] Run complete. {n_rows_written} new session rows written to "
           f"{out_path.resolve()}")
     print(f"[SUMMARY] class_ids processed this run: {n_classes}, "
@@ -331,6 +352,30 @@ def main():
         "output_file": str(out_path),
     }
     send_run_report(STAGE_NAME, summary, config)
+
+
+def main():
+    args = _parse_args()
+
+    config = load_config(SCRIPT_DIR)
+    apikey = args.apikey or config.get("api_key")
+    org_id = require_config(config, "org_id")
+
+    output_folder = resolve_output_folder(config, Path(__file__))
+
+    if not apikey:
+        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
+        sys.exit(1)
+
+    lookup_df = _load_lookup(args, output_folder)
+    out_path = output_folder / args.out
+    lookup_df = _apply_resume_and_limit(args, lookup_df, out_path)
+
+    start_time = datetime.now()
+    n_classes, n_no_sessions, n_errors, n_rows_written = _pull_all_class_attendance(
+        lookup_df, apikey, org_id, args, out_path
+    )
+    _report_results(out_path, n_classes, n_no_sessions, n_errors, n_rows_written, start_time, config)
 
 
 if __name__ == "__main__":

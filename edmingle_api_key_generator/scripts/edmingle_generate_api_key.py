@@ -10,6 +10,8 @@ recipients from ../../notifications.yaml (the central file).
 
 from __future__ import annotations
 
+# ── SETUP ──
+
 import argparse
 import getpass
 import json
@@ -29,6 +31,8 @@ import common
 import requests
 from edmingle_credentials_writer import CredentialsUpdateError, update_shared_api_key
 from edmingle_rotation_guard import RotationBlockedError, ensure_no_pipeline_running
+
+# ── CONFIG & CREDENTIALS ──
 
 CREDENTIALS_PATH = str(Path(__file__).resolve().parents[2] / "credentials.yaml")
 
@@ -55,6 +59,9 @@ EDMINGLE_CURRENT_API_KEY = str(_edmingle.get("api_key", ""))
 EMAIL_TO = tuple(_email_channel.get("to_addresses", []))
 
 
+# ── EXCEPTIONS ──
+
+
 class ApiKeyGenerationError(RuntimeError):
     """Edmingle did not return a usable API key."""
 
@@ -67,6 +74,9 @@ class EmailDeliveryError(RuntimeError):
     """The generated API key could not be delivered."""
 
 
+# ── SETTINGS VALIDATION ──
+
+
 def validate_settings() -> None:
     if not EDMINGLE_LOGIN_URL.startswith("https://"):
         raise ValueError("EDMINGLE_LOGIN_URL must use HTTPS")
@@ -75,6 +85,9 @@ def validate_settings() -> None:
                          "to check a new key")
     if not (_smtp.get("from_address") and EMAIL_TO and _smtp.get("host") and _smtp.get("app_password")):
         raise ValueError("notifications.yaml needs an SMTP host, sender, app password and at least one recipient")
+
+
+# ── CREDENTIAL INPUT ──
 
 
 def read_credentials() -> tuple[str, str]:
@@ -87,6 +100,9 @@ def read_credentials() -> tuple[str, str]:
     if not username or not password:
         raise ValueError("Edmingle username and password are required")
     return username, password
+
+
+# ── API LAYER ──
 
 
 def extract_api_key(payload: Any) -> str:
@@ -164,6 +180,9 @@ class _QuietLogger:
 _QUIET = _QuietLogger()
 
 
+# ── EMAIL ──
+
+
 def build_api_key_email(
     api_key: str,
     username: str,
@@ -195,6 +214,9 @@ def send_notice_email(subject: str, body: str) -> None:
 def send_notice(key: str, **values: Any) -> None:
     """send_notice_email() with the wording of message `key` from ../notification_messages.yaml."""
     send_notice_email(*common.render_message("edmingle_api_key_generator", key, **values))
+
+
+# ── MAIN ──
 
 
 def parse_args() -> argparse.Namespace:

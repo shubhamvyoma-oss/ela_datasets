@@ -34,6 +34,8 @@ Must be run after both Stage 1 (ip_driven_country_data.py) and Stage 2
 does not run either of them itself.
 """
 
+# ── SETUP ──
+
 import argparse
 import csv
 import os
@@ -46,15 +48,22 @@ sys.pycache_prefix = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".pycache")
 )
 
+# ── CONFIG ──
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR.parent / "output"
 
 DIAL_COUNTRY_SOURCE_COLUMN = "Derived Country (Dial Code)"
 EMAIL_COLUMN = "Email"
 
+# ── HELPERS ──
+
 
 def normalize_email(raw: str) -> str:
     return (raw or "").strip().lower()
+
+
+# ── DATA LOADING ──
 
 
 def load_ip_driven_lookup(path: Path) -> dict[str, str]:
@@ -115,6 +124,9 @@ def read_dial_rows(path: Path, title_line_holder: list) -> tuple[list[str], list
         return list(reader.fieldnames), list(reader)
 
 
+# ── MERGE ──
+
+
 def merge(dial_path: Path, ip_path: Path, output_path: Path) -> None:
     ip_lookup = load_ip_driven_lookup(ip_path)
 
@@ -173,6 +185,9 @@ def merge(dial_path: Path, ip_path: Path, output_path: Path) -> None:
     print(f"  -> {fell_back_to_dial} rows: final_country fell back to dial_country (no ip-driven match)")
     print(f"  -> {no_country_at_all} rows: no country determined from either source")
     print(f"Wrote {output_path}")
+
+
+# ── MAIN ──
 
 
 def main() -> int:

@@ -1,3 +1,5 @@
+# ── SETUP ──
+
 import json
 import os
 import sys
@@ -14,6 +16,8 @@ import requests
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")))
 import common
+
+# ── CONFIG ──
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "credentials.yaml"))
@@ -35,6 +39,8 @@ if os.path.exists(_CONFIG_PATH):
         _CONFIG.update(json.load(_f))
 REQUEST_TIMEOUT_SECONDS = _CONFIG["request_timeout_seconds"]
 
+# ── API LAYER ──
+
 
 def fetch_courses():
     response = requests.get(BASE_URL, headers=HEADERS, params={"org_id": ORGANIZATION_ID}, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -46,6 +52,9 @@ def fetch_courses():
     data = response.json()
     print("Response keys:", data.keys())
     return data.get("response", [])
+
+
+# ── MAIN ──
 
 
 def main():

@@ -27,6 +27,8 @@ USAGE
     python build_course_catalog.py --calls_per_minute 20
 """
 
+# ── SETUP ──
+
 import argparse
 import os
 import sys
@@ -53,6 +55,8 @@ from pipeline_common import (
     resolve_output_folder,
     send_run_report,
 )
+
+# ── CONFIG ──
 
 STAGE_NAME = "build_course_catalog"
 SCRIPT_DIR = Path(__file__).parent
@@ -119,6 +123,9 @@ BATCH_IDS_TO_EXCLUDE = {
 }
 
 
+# ── HELPERS ──
+
+
 def is_excluded_batch_id(batch_id):
     try:
         return int(batch_id) in BATCH_IDS_TO_EXCLUDE
@@ -129,6 +136,9 @@ def is_excluded_batch_id(batch_id):
 def log_progress(message):
     now = datetime.now().strftime("%H:%M:%S")
     print(f"{now} - {message}")
+
+
+# ── API LAYER ──
 
 
 def get_catalogue(institute_id, headers):
@@ -211,6 +221,9 @@ def get_all_batches(org_id, headers, limiter: RateLimiter):
     df = pd.DataFrame(all_data)
     log_progress(f"Total batch rows fetched (Archived excluded): {len(df)}")
     return df
+
+
+# ── TRANSFORM ──
 
 
 def filter_excluded_batches(df):
@@ -301,6 +314,61 @@ def add_courses_without_batches(merged_df, catalogue_df):
     return final_df
 
 
+# ── MAIN ──
+
+
+def _build_catalog(institute_id, org_id, headers, limiter: RateLimiter, out_path: Path):
+    """Fetches, merges and writes the full course/batch catalog. Returns the number of rows
+    written, or None if a required upstream fetch came back empty (already logged here --
+    the caller should count that as an error)."""
+    log_progress("Starting Course Catalog Build...")
+
+    cat_df = get_catalogue(institute_id, headers)
+    if cat_df.empty:
+        print("Catalogue fetch failed. Aborting.")
+        return None
+
+    batch_df = get_all_batches(org_id, headers, limiter)
+    if batch_df.empty:
+        print("Batch fetch returned no data. Aborting.")
+        return None
+
+    batch_df = filter_excluded_batches(batch_df)
+    batch_df = compute_bundle_enrollment(batch_df)
+    batch_df = mark_latest_batch(batch_df)
+    batch_df["Has_Batch"] = 1
+
+    # Join key: batch side = "bundle_id", catalogue side = "Bundle id"
+    merged = batch_df.merge(cat_df, left_on="bundle_id", right_on="Bundle id", how="left")
+    merged["Catalogue_Match"] = merged["Bundle id"].notna().astype(int)
+    merged = apply_business_logic(merged)
+    final_df = add_courses_without_batches(merged, cat_df)
+
+    # Unix timestamp -> YYYY-MM-DD
+    final_df["start_date"] = pd.to_datetime(
+        pd.to_numeric(final_df["start_date"], errors="coerce"), unit="s", errors="coerce"
+    ).dt.date
+    final_df["end_date"] = pd.to_datetime(
+        pd.to_numeric(final_df["end_date"], errors="coerce"), unit="s", errors="coerce"
+    ).dt.date
+
+    existing_cols = [col for col in OUTPUT_COLUMNS if col in final_df.columns]
+    missing_cols = [col for col in OUTPUT_COLUMNS if col not in final_df.columns]
+    if missing_cols:
+        print(f"Warning: these expected columns were not found and will be skipped: {missing_cols}")
+
+    final_report = final_df[existing_cols].fillna("")
+
+    # Written once, atomically, only after every business rule above has run —
+    # a crash before this point never leaves a partial/corrupt output file.
+    final_report.to_csv(out_path, index=False, encoding="utf-8-sig")
+    n_rows_written = len(final_report)
+
+    log_progress(f"SUCCESS! Saved {n_rows_written} rows to {out_path}")
+    log_progress(f"Columns written: {len(existing_cols)}")
+    return n_rows_written
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build the Vyoma course/batch catalog (Stage 1)")
     parser.add_argument("--apikey", type=str, default=None)
@@ -328,53 +396,11 @@ def main():
     start_time = datetime.now()
 
     try:
-        log_progress("Starting Course Catalog Build...")
-
-        cat_df = get_catalogue(institute_id, headers)
-        if cat_df.empty:
-            print("Catalogue fetch failed. Aborting.")
+        result = _build_catalog(institute_id, org_id, headers, limiter, out_path)
+        if result is None:
             n_errors += 1
-            return
-
-        batch_df = get_all_batches(org_id, headers, limiter)
-        if batch_df.empty:
-            print("Batch fetch returned no data. Aborting.")
-            n_errors += 1
-            return
-
-        batch_df = filter_excluded_batches(batch_df)
-        batch_df = compute_bundle_enrollment(batch_df)
-        batch_df = mark_latest_batch(batch_df)
-        batch_df["Has_Batch"] = 1
-
-        # Join key: batch side = "bundle_id", catalogue side = "Bundle id"
-        merged = batch_df.merge(cat_df, left_on="bundle_id", right_on="Bundle id", how="left")
-        merged["Catalogue_Match"] = merged["Bundle id"].notna().astype(int)
-        merged = apply_business_logic(merged)
-        final_df = add_courses_without_batches(merged, cat_df)
-
-        # Unix timestamp -> YYYY-MM-DD
-        final_df["start_date"] = pd.to_datetime(
-            pd.to_numeric(final_df["start_date"], errors="coerce"), unit="s", errors="coerce"
-        ).dt.date
-        final_df["end_date"] = pd.to_datetime(
-            pd.to_numeric(final_df["end_date"], errors="coerce"), unit="s", errors="coerce"
-        ).dt.date
-
-        existing_cols = [col for col in OUTPUT_COLUMNS if col in final_df.columns]
-        missing_cols = [col for col in OUTPUT_COLUMNS if col not in final_df.columns]
-        if missing_cols:
-            print(f"Warning: these expected columns were not found and will be skipped: {missing_cols}")
-
-        final_report = final_df[existing_cols].fillna("")
-
-        # Written once, atomically, only after every business rule above has run —
-        # a crash before this point never leaves a partial/corrupt output file.
-        final_report.to_csv(out_path, index=False, encoding="utf-8-sig")
-        n_rows_written = len(final_report)
-
-        log_progress(f"SUCCESS! Saved {n_rows_written} rows to {out_path}")
-        log_progress(f"Columns written: {len(existing_cols)}")
+        else:
+            n_rows_written = result
 
     except Exception as e:
         print("ERROR occurred during execution!")

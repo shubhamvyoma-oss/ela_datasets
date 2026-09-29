@@ -840,7 +840,7 @@ def build_session_wise_output(df: pd.DataFrame, session_col: str, cfg: dict) -> 
 
 # ── MAIN ──
 
-def main():
+def _parse_args():
     parser = argparse.ArgumentParser(description="Edmingle report_type=55 attendance pipeline")
     parser.add_argument("--config",    default="attendance_config.yaml")
     parser.add_argument("--date",      type=str)
@@ -849,11 +849,10 @@ def main():
     parser.add_argument("--from-file", dest="from_file", type=str)
     parser.add_argument("--dry-run",   action="store_true")
     parser.add_argument("--verbose",   action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    cfg = load_config(args.config)
-    log = setup_logging(cfg, verbose=args.verbose)
 
+def _log_startup_banner(cfg, args, log):
     log.info("=" * 60)
     log.info(f"Edmingle Attendance Pipeline v{VERSION}")
     log.info(f"Config : {args.config}")
@@ -866,8 +865,12 @@ def main():
         log.info("MODE   : DRY RUN -- no real API calls")
     log.info("=" * 60)
 
+
+def _acquire_lock_and_signal_handlers(cfg, log):
+    """Acquires the run lock (held until the process exits -- keep the returned object referenced
+    for the life of main()) and installs the Ctrl+C / SIGTERM handler."""
     try:
-        lock = acquire_lock(cfg["paths"]["lock_file"], log)  # held until the process exits
+        lock = acquire_lock(cfg["paths"]["lock_file"], log)
     except PipelineError as e:
         log.critical(str(e))
         sys.exit(1)
@@ -878,6 +881,100 @@ def main():
 
     signal.signal(signal.SIGINT,  _graceful_exit)
     signal.signal(signal.SIGTERM, _graceful_exit)
+    return lock
+
+
+def _run_offline(args, cfg, log):
+    """--from-file mode: summarise one already-downloaded raw CSV, no API calls."""
+    log.info(f"--from-file: loading {args.from_file}")
+    raw_df = pd.read_csv(args.from_file, low_memory=False)
+    label  = Path(args.from_file).stem
+    staging_files = []
+    log.info("Running batch attendance summary...")
+    summary, session_df = summarise_frame(raw_df, cfg, log)
+    total_rows = len(raw_df)
+    return label, staging_files, summary, session_df, total_rows, None
+
+
+def _run_online(args, cfg, log):
+    """Normal mode: pull the requested dates from Edmingle, then summarise the staging files.
+    Returns dry_dir too (None outside --dry-run) so main() can clean it up in its finally block."""
+    check_disk_space(cfg, log)
+    dates = build_date_list(args, cfg)
+    label = dates[0] if len(dates) == 1 else f"{dates[0]}_to_{dates[-1]}"
+    dry_dir = None
+    if args.dry_run:  # simulated rows must never be mistaken for real staging files later
+        dry_dir = Path(cfg["paths"]["staging_folder"]) / "_dry_run"
+        cfg["paths"]["staging_folder"] = str(dry_dir)
+
+    staging_files = run_pull_loop(dates, requests.Session(), cfg, log, dry_run=args.dry_run)
+    if not staging_files:
+        log.warning("No data fetched for any date. Nothing to summarise.")
+        sys.exit(0)
+
+    log.info("Running batch attendance summary...")
+    summary, session_df, total_rows = summarise_staging_files(staging_files, cfg, label, log)
+    return label, staging_files, summary, session_df, total_rows, dry_dir
+
+
+def _write_outputs(cfg, log, label, summary, session_df):
+    """Sorts and writes the summary + (optional) session-wise CSVs. Returns
+    (summary sorted, summary_path, session_path) for the completion stats."""
+    summary = summary.sort_values("batchName").reset_index(drop=True)
+
+    ts           = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+    summary_path = (
+        Path(cfg["paths"]["output_folder"])
+        / f"batch_attendance_summary_{label}_{ts}.csv"
+    )
+    summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
+    log.info(f"Summary: {len(summary):,} batches -- {summary_path}")
+
+    session_path = None
+    if session_df is not None:
+        session_df = session_df.sort_values(
+            ["batchName", "session_number"]
+        ).reset_index(drop=True)
+        session_path = (
+            Path(cfg["paths"]["output_folder"])
+            / f"session_wise_attendance_{label}_{ts}.csv"
+        )
+        session_df.to_csv(session_path, index=False, encoding="utf-8-sig")
+        log.info(
+            f"Session-wise: {len(session_df):,} sessions across "
+            f"{session_df['batch_Id'].nunique():,} batches -- {session_path}"
+        )
+
+    return summary, summary_path, session_path
+
+
+def _log_completion(cfg, log, run_start, label, summary, total_rows, summary_path, session_path):
+    elapsed = (datetime.now(IST) - run_start).total_seconds()
+    stats = {
+        "Date range":          label,
+        "Student filter":      ("Active only"
+                                if cfg["pipeline"].get("exclude_inactive_students", True)
+                                else "All statuses"),
+        "Batches in summary":  str(len(summary)),
+        "Total raw rows":      f"{total_rows:,}",
+        "Summary file":        str(summary_path),
+        "Session-wise file":   str(session_path) if session_path else "disabled",
+        "Elapsed":             f"{elapsed / 60:.1f} minutes",
+        "Completed at":        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+    }
+    for k, v in stats.items():
+        log.info(f"  {k}: {v}")
+
+    notify(cfg, "run_complete", log, details=common.format_details(stats))
+    log.info("Pipeline complete.")
+
+
+def main():
+    args = _parse_args()
+    cfg = load_config(args.config)
+    log = setup_logging(cfg, verbose=args.verbose)
+    _log_startup_banner(cfg, args, log)
+    lock = _acquire_lock_and_signal_handlers(cfg, log)  # noqa: F841 -- held for the process's lifetime
 
     run_start = datetime.now(IST)
     exit_code = 0
@@ -886,81 +983,17 @@ def main():
     try:
         Path(cfg["paths"]["output_folder"]).mkdir(parents=True, exist_ok=True)
 
-        # ── Offline mode ─────────────────────────────────────────────────
         if args.from_file:
-            log.info(f"--from-file: loading {args.from_file}")
-            raw_df = pd.read_csv(args.from_file, low_memory=False)
-            label  = Path(args.from_file).stem
-            staging_files = []
-            log.info("Running batch attendance summary...")
-            summary, session_df = summarise_frame(raw_df, cfg, log)
-            total_rows = len(raw_df)
-
-        # ── Online mode ──────────────────────────────────────────────────
+            label, staging_files, summary, session_df, total_rows, dry_dir = _run_offline(args, cfg, log)
         else:
-            check_disk_space(cfg, log)
-            dates = build_date_list(args, cfg)
-            label = dates[0] if len(dates) == 1 else f"{dates[0]}_to_{dates[-1]}"
-            if args.dry_run:  # simulated rows must never be mistaken for real staging files later
-                dry_dir = Path(cfg["paths"]["staging_folder"]) / "_dry_run"
-                cfg["paths"]["staging_folder"] = str(dry_dir)
+            label, staging_files, summary, session_df, total_rows, dry_dir = _run_online(args, cfg, log)
 
-            staging_files = run_pull_loop(dates, requests.Session(), cfg, log, dry_run=args.dry_run)
-            if not staging_files:
-                log.warning("No data fetched for any date. Nothing to summarise.")
-                sys.exit(0)
-
-            log.info("Running batch attendance summary...")
-            summary, session_df, total_rows = summarise_staging_files(staging_files, cfg, label, log)
-
-        # ── Outputs ──────────────────────────────────────────────────────
-        summary = summary.sort_values("batchName").reset_index(drop=True)
-
-        ts           = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
-        summary_path = (
-            Path(cfg["paths"]["output_folder"])
-            / f"batch_attendance_summary_{label}_{ts}.csv"
-        )
-        summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
-        log.info(f"Summary: {len(summary):,} batches -- {summary_path}")
-
-        session_path = None
-        if session_df is not None:
-            session_df = session_df.sort_values(
-                ["batchName", "session_number"]
-            ).reset_index(drop=True)
-            session_path = (
-                Path(cfg["paths"]["output_folder"])
-                / f"session_wise_attendance_{label}_{ts}.csv"
-            )
-            session_df.to_csv(session_path, index=False, encoding="utf-8-sig")
-            log.info(
-                f"Session-wise: {len(session_df):,} sessions across "
-                f"{session_df['batch_Id'].nunique():,} batches -- {session_path}"
-            )
+        summary, summary_path, session_path = _write_outputs(cfg, log, label, summary, session_df)
 
         if cfg["pipeline"]["cleanup_staging_after_combine"] and staging_files:
             remove_staging_files(staging_files, log)
 
-        # ── Completion ────────────────────────────────────────────────────
-        elapsed = (datetime.now(IST) - run_start).total_seconds()
-        stats = {
-            "Date range":          label,
-            "Student filter":      ("Active only"
-                                    if cfg["pipeline"].get("exclude_inactive_students", True)
-                                    else "All statuses"),
-            "Batches in summary":  str(len(summary)),
-            "Total raw rows":      f"{total_rows:,}",
-            "Summary file":        str(summary_path),
-            "Session-wise file":   str(session_path) if session_path else "disabled",
-            "Elapsed":             f"{elapsed / 60:.1f} minutes",
-            "Completed at":        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
-        }
-        for k, v in stats.items():
-            log.info(f"  {k}: {v}")
-
-        notify(cfg, "run_complete", log, details=common.format_details(stats))
-        log.info("Pipeline complete.")
+        _log_completion(cfg, log, run_start, label, summary, total_rows, summary_path, session_path)
 
     except PipelineError as e:
         log.critical(f"Pipeline error: {e}")

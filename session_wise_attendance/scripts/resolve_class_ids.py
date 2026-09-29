@@ -29,6 +29,8 @@ USAGE
     python resolve_class_ids.py --restart            # ignore existing progress
 """
 
+# ── SETUP ──
+
 import argparse
 import os
 import sys
@@ -65,6 +67,8 @@ from pipeline_common import (
     send_run_report,
 )
 
+# ── CONFIG ──
+
 STAGE_NAME = "resolve_class_ids"
 SCRIPT_DIR = Path(__file__).parent
 MASTERBATCH_ENDPOINT = f"{BASE_URL}/masterbatch"
@@ -79,6 +83,9 @@ OUTPUT_COLUMNS = [
 DEFAULT_CALLS_PER_MINUTE = PIPELINE_CONFIG["calls_per_minute"]  # safety margin under Edmingle's 30/min limit
 
 
+# ── API LAYER ──
+
+
 def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int, max_retries: int = 2) -> list:
     """GET /masterbatch/<batchId> -> the subject-level class records, or [] if the call keeps failing.
     A 429 waits out Edmingle's own reported block duration (see pipeline_common.get_json)."""
@@ -91,6 +98,9 @@ def fetch_classes_for_batch(apikey: str, org_id: int, batch_id: int, max_retries
     # Real response shape (confirmed live, Edmingle's docs were wrong): the top-level "class_id" is
     # actually the BATCH id -- real subject-level class_ids are nested under class.courses_array[].
     return data.get("class", {}).get("courses_array", [])
+
+
+# ── TRANSFORM ──
 
 
 def courses_array_to_records(courses_array: list) -> list:
@@ -115,7 +125,10 @@ def courses_array_to_records(courses_array: list) -> list:
     return records
 
 
-def main():
+# ── MAIN ──
+
+
+def _parse_args():
     parser = argparse.ArgumentParser(
         description="Resolve class_id(s) for every batch in course_catalog.csv (Stage 2)")
     parser.add_argument("--in", dest="input_file", type=str,
@@ -129,18 +142,11 @@ def main():
                          help="Ignore existing progress in the output CSV and start fresh "
                               "(WARNING: overwrites previous results)")
     parser.add_argument("--apikey", type=str, default=None)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    config = load_config(SCRIPT_DIR)
-    apikey = args.apikey or config.get("api_key")
-    org_id = require_config(config, "org_id")
 
-    output_folder = resolve_output_folder(config, Path(__file__))
-
-    if not apikey:
-        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
-        sys.exit(1)
-
+def _load_catalog(args, output_folder: Path) -> pd.DataFrame:
+    """Loads, validates and dedups course_catalog.csv. Exits on a missing file or missing columns."""
     input_path = Path(args.input_file)
     if not input_path.is_absolute() and not input_path.exists():
         candidate = output_folder / args.input_file
@@ -160,10 +166,11 @@ def main():
               f"Available: {list(catalog_df.columns)}")
         sys.exit(1)
 
-    catalog_df = catalog_df.dropna(subset=["batch_id"]).drop_duplicates(subset=["batch_id"])
+    return catalog_df.dropna(subset=["batch_id"]).drop_duplicates(subset=["batch_id"])
 
-    out_path = output_folder / args.out
 
+def _apply_resume_and_limit(args, catalog_df: pd.DataFrame, out_path: Path) -> pd.DataFrame:
+    """Applies --restart, then skips already-resolved batch_ids, then --limit, in that order."""
     if args.restart and out_path.exists():
         out_path.unlink()
         print(f"[INFO] --restart: removed existing {out_path}, starting fresh.")
@@ -177,48 +184,57 @@ def main():
     if args.limit:
         catalog_df = catalog_df.head(args.limit)
 
-    n_batches = len(catalog_df)
-    start_time = datetime.now()
+    return catalog_df
 
+
+def _resolve_all_batches(catalog_df: pd.DataFrame, apikey: str, org_id: int, args, out_path: Path) -> int:
+    """Runs the rate-limited per-batch resolution loop, writing each result immediately so the
+    run stays resumable. Returns the number of batches this call attempted."""
+    n_batches = len(catalog_df)
     if n_batches == 0:
         print("[INFO] Nothing left to process — all batches already resolved.")
-    else:
-        limiter = RateLimiter(args.calls_per_minute)
-        est_seconds = n_batches * limiter.delay_seconds
-        print(f"[INFO] Resolving class_id(s) for {n_batches} remaining batches "
-              f"at {args.calls_per_minute:.0f} calls/min "
-              f"(rough estimate: ~{est_seconds/60:.1f} min, before any rate-limit waits)")
+        return n_batches
 
-        for i, row in enumerate(catalog_df.itertuples(index=False), 1):
-            batch_id = int(row.batch_id)
-            print(f"  [{i}/{n_batches}] batch_id={batch_id} ({row.batch_name})")
+    limiter = RateLimiter(args.calls_per_minute)
+    est_seconds = n_batches * limiter.delay_seconds
+    print(f"[INFO] Resolving class_id(s) for {n_batches} remaining batches "
+          f"at {args.calls_per_minute:.0f} calls/min "
+          f"(rough estimate: ~{est_seconds/60:.1f} min, before any rate-limit waits)")
 
-            limiter.start()
-            courses_array = fetch_classes_for_batch(apikey, org_id, batch_id)
-            class_records = courses_array_to_records(courses_array)
+    for i, row in enumerate(catalog_df.itertuples(index=False), 1):
+        batch_id = int(row.batch_id)
+        print(f"  [{i}/{n_batches}] batch_id={batch_id} ({row.batch_name})")
 
-            if not class_records:
-                class_records = [{}]  # still emit a row so the batch isn't silently dropped
+        limiter.start()
+        courses_array = fetch_classes_for_batch(apikey, org_id, batch_id)
+        class_records = courses_array_to_records(courses_array)
 
-            rows_to_write = [{
-                "bundle_id": row.bundle_id,
-                "bundle_name": row.bundle_name,
-                "batch_id": batch_id,
-                "batch_name": row.batch_name,
-                "class_id": cr.get("class_id"),
-                "tutor_name": cr.get("tutor_name"),
-                "tutor_id": cr.get("tutor_id"),
-                "total_classes": cr.get("total_classes"),
-                "completed_classes": cr.get("completed_classes"),
-                "cancelled_classes": cr.get("cancelled_classes"),
-                "num_users": cr.get("num_users"),
-                "associated_masterbatches": cr.get("associated_masterbatches"),
-            } for cr in class_records]
+        if not class_records:
+            class_records = [{}]  # still emit a row so the batch isn't silently dropped
 
-            # Write immediately — this is what makes the run resumable.
-            append_rows_to_csv(rows_to_write, out_path, columns=OUTPUT_COLUMNS)
-            limiter.wait()
+        rows_to_write = [{
+            "bundle_id": row.bundle_id,
+            "bundle_name": row.bundle_name,
+            "batch_id": batch_id,
+            "batch_name": row.batch_name,
+            "class_id": cr.get("class_id"),
+            "tutor_name": cr.get("tutor_name"),
+            "tutor_id": cr.get("tutor_id"),
+            "total_classes": cr.get("total_classes"),
+            "completed_classes": cr.get("completed_classes"),
+            "cancelled_classes": cr.get("cancelled_classes"),
+            "num_users": cr.get("num_users"),
+            "associated_masterbatches": cr.get("associated_masterbatches"),
+        } for cr in class_records]
 
+        # Write immediately — this is what makes the run resumable.
+        append_rows_to_csv(rows_to_write, out_path, columns=OUTPUT_COLUMNS)
+        limiter.wait()
+
+    return n_batches
+
+
+def _report_results(out_path: Path, n_batches: int, start_time: datetime, config: dict) -> None:
     print(f"\n[RESULT] Run complete. Output at {out_path.resolve()}")
     total_rows = 0
     unresolved = 0
@@ -240,6 +256,28 @@ def main():
         "output_file": str(out_path),
     }
     send_run_report(STAGE_NAME, summary, config)
+
+
+def main():
+    args = _parse_args()
+
+    config = load_config(SCRIPT_DIR)
+    apikey = args.apikey or config.get("api_key")
+    org_id = require_config(config, "org_id")
+
+    output_folder = resolve_output_folder(config, Path(__file__))
+
+    if not apikey:
+        print("[ERROR] No API key found. Pass --apikey or set edmingle.api_key in ../../credentials.yaml")
+        sys.exit(1)
+
+    catalog_df = _load_catalog(args, output_folder)
+    out_path = output_folder / args.out
+    catalog_df = _apply_resume_and_limit(args, catalog_df, out_path)
+
+    start_time = datetime.now()
+    n_batches = _resolve_all_batches(catalog_df, apikey, org_id, args, out_path)
+    _report_results(out_path, n_batches, start_time, config)
 
 
 if __name__ == "__main__":

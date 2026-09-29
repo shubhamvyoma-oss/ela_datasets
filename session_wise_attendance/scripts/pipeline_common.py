@@ -13,6 +13,8 @@ USAGE
     )
 """
 
+# ── SETUP ──
+
 import json
 import re
 import sys
@@ -33,6 +35,8 @@ DEFAULT_BLOCK_WAIT_SECONDS = 31 * 60  # fallback if "Try after X minutes" can't 
 BASE_URL = common.edmingle_settings()["base_url"]
 auth_headers = common.auth_headers  # re-exported for the stage scripts
 
+# ── PIPELINE CONFIG ──
+
 # This pipeline's own tuning knobs (rate limit, request timeout) -- read once from
 # session_wise_attendance_config.json next to this module if present, else these defaults
 # (the values every stage script hardcoded before 2026-09-28).
@@ -48,6 +52,8 @@ def load_pipeline_config() -> dict:
 
 
 PIPELINE_CONFIG = load_pipeline_config()  # re-exported for the stage scripts' own defaults
+
+# ── CREDENTIALS & NOTIFICATIONS CONFIG ──
 
 
 def require_config(config: dict, key: str):
@@ -103,6 +109,9 @@ def _merge_notifications(config: dict) -> None:
     config["smtp"] = smtp
 
 
+# ── HTTP HELPERS ──
+
+
 def parse_retry_after_seconds(response_text: str, default_seconds: int = DEFAULT_BLOCK_WAIT_SECONDS) -> int:
     """Parses "Try after 29.93 minutes" out of Edmingle's 429 body. Falls back
     to default_seconds if the message can't be parsed."""
@@ -110,6 +119,9 @@ def parse_retry_after_seconds(response_text: str, default_seconds: int = DEFAULT
     if match:
         return int(float(match.group(1)) * 60) + 15  # +15s buffer past what Edmingle reports
     return default_seconds
+
+
+# ── FILE HELPERS ──
 
 
 def resolve_output_folder(config: dict, script_path: Path) -> Path:
@@ -150,6 +162,9 @@ def append_rows_to_csv(rows, out_path: Path, columns: list | None = None) -> Non
     df.to_csv(out_path, mode="a", index=False, header=write_header, encoding="utf-8-sig")
 
 
+# ── RATE LIMITING ──
+
+
 class RateLimiter:
     """Sleeps out whatever's left of the target per-call spacing, accounting
     for time already spent on the call itself — keeps every script safely
@@ -177,6 +192,9 @@ class RateLimiter:
         remaining = self.delay_seconds - elapsed
         if remaining > 0:
             time.sleep(remaining)
+
+
+# ── RUN LOGGING ──
 
 
 class _Tee:
@@ -256,6 +274,8 @@ class PrintLogger:
     def error(msg, *args, **kwargs):
         print(f"[ERROR] {msg}")
 
+
+# ── API & NOTIFICATIONS ──
 
 ApiError = common.ApiError
 

@@ -1,3 +1,5 @@
+# ── SETUP ──
+
 import json
 import os
 import sys
@@ -14,6 +16,8 @@ import requests
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")))
 import common
+
+# ── CONFIG ──
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "credentials.yaml"))
@@ -52,9 +56,14 @@ if os.path.exists(_CONFIG_PATH):
         _CONFIG.update(json.load(_f))
 REQUEST_TIMEOUT_SECONDS = _CONFIG["request_timeout_seconds"]
 
+# ── LOGGING ──
+
 
 def log_progress(message):
     print(f"{datetime.now():%H:%M:%S} - {message}")
+
+
+# ── API LAYER ──
 
 
 def get_catalogue():
@@ -93,8 +102,14 @@ def get_batches_by_status(status_code, status_label):
 def get_all_batches():
     log_progress("Fetching All Batches...")
     status_codes = {0: "Active", 1: "Archived", 3: "Completed"}
-    all_data = [row for code, label in status_codes.items() for row in get_batches_by_status(code, label)]
+    all_data = []
+    for code, label in status_codes.items():
+        for row in get_batches_by_status(code, label):
+            all_data.append(row)
     return pd.DataFrame(all_data)
+
+
+# ── TRANSFORM ──
 
 
 def filter_test_batches(df):
@@ -140,6 +155,9 @@ def add_courses_without_batches(merged_df, catalogue_df):
     missing["Final_Status"] = missing["Status"]
     missing["Catalogue_Match"] = True
     return pd.concat([merged_df, missing], ignore_index=True)
+
+
+# ── MAIN ──
 
 
 def main():

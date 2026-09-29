@@ -21,6 +21,8 @@ The config holds filter_key, start_date and an optional end_date (default: the e
 The API key, organization id and base URL come from ../../credentials.yaml.
 """
 
+# ── SETUP ──
+
 import argparse
 import csv
 import json
@@ -41,6 +43,8 @@ import common
 from common import RollingRateLimiter
 
 import requests
+
+# ── CONSTANTS ──
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
@@ -64,12 +68,16 @@ CSV_FIELDS = [
     "source_page",
 ]
 
+# ── LOGGING ──
+
 
 def log(msg: str):
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}")
 
 
 _LOG = SimpleNamespace(warning=log, error=log)  # the logger shape common.get_json expects
+
+# ── HELPERS ──
 
 
 def epoch_to_ist_str(epoch_value) -> str:
@@ -83,6 +91,9 @@ def epoch_to_ist_str(epoch_value) -> str:
 def today_end_ist() -> str:
     """End of today (IST) in the API's date format -- the default end_date."""
     return datetime.now(IST).strftime("%d-%m-%YT23:59:59+05:30")
+
+
+# ── CONFIG ──
 
 
 def load_config(config_path: Path) -> dict:
@@ -99,6 +110,9 @@ def load_config(config_path: Path) -> dict:
     for key, default in DEFAULTS.items():
         cfg.setdefault(key, default)
     return cfg
+
+
+# ── API LAYER ──
 
 
 def fetch_page(session, cfg, end_date, page, rate_limiter):
@@ -124,6 +138,9 @@ def fetch_page(session, cfg, end_date, page, rate_limiter):
     except common.ApiError as error:
         log(f"  [page {page}] giving up: {error}")
         return None
+
+
+# ── PULL ORCHESTRATION ──
 
 
 def run_collection(cfg: dict) -> Path:
@@ -181,6 +198,9 @@ def run_collection(cfg: dict) -> Path:
     os.replace(part, csv_path)
     log(f"Done. {csv_path} contains {rows_written} rows across pages 1-{page}.")
     return csv_path
+
+
+# ── MAIN ──
 
 
 def main():

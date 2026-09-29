@@ -15,6 +15,8 @@ Usage:
     pass --output explicitly if you need to keep a specific run's file.)
 """
 
+# ── SETUP ──
+
 import argparse
 import csv
 import io
@@ -41,6 +43,8 @@ from edmingle_constants import DATE_FMT, FIELDS
 import common
 from common import RollingRateLimiter, format_duration
 
+# ── CONFIG ──
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Defaults for every run; no CLI flag -- override in enrollments_reports_config.json (next to
@@ -58,6 +62,8 @@ _CONFIG_PATH = SCRIPT_DIR / "enrollments_reports_config.json"
 if _CONFIG_PATH.exists():
     DEFAULTS.update(json.loads(_CONFIG_PATH.read_text(encoding="utf-8")))
 
+# ── NOTIFICATIONS ──
+
 
 def send_mail(subject: str, body: str, logger: logging.Logger) -> None:
     # Notifications config lives in this pipeline's own folder (a sibling of scripts/).
@@ -71,6 +77,9 @@ def send_message(key: str, logger: logging.Logger, **values) -> None:
     send_mail(subject, body, logger)
 
 
+# ── LOGGING ──
+
+
 def setup_logging(log_path: Path) -> logging.Logger:
     logging.basicConfig(
         level=logging.INFO,
@@ -80,6 +89,9 @@ def setup_logging(log_path: Path) -> logging.Logger:
         force=True,
     )
     return logging.getLogger("edmingle_export")
+
+
+# ── HELPERS ──
 
 
 def build_chunks(start_date: str, end_date: str, chunk_days: int) -> list[tuple[str, str]]:
@@ -101,6 +113,9 @@ def build_chunks(start_date: str, end_date: str, chunk_days: int) -> list[tuple[
 def count_rows(path: Path) -> int:
     with path.open(newline="", encoding="utf-8") as fh:
         return sum(1 for _ in csv.reader(fh))
+
+
+# ── EXPORT RUN ──
 
 
 class EdmingleExportRun:
@@ -221,6 +236,9 @@ class EdmingleExportRun:
         send_message("completed", self.logger, start_date=self.start_date, end_date=self.end_date,
                      chunks=len(chunks), chunk_days=self.config["chunk_days"], rows=total_rows,
                      output=self.output_path)
+
+
+# ── MAIN ──
 
 
 def parse_args():

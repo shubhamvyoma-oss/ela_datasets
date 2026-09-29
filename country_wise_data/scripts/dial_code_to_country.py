@@ -32,6 +32,8 @@ location (../input/ and ../output/), not the caller's current working
 directory, matching the rest of ela_datasets/.
 """
 
+# ── SETUP ──
+
 import os
 import sys
 
@@ -50,6 +52,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_DIR = SCRIPT_DIR.parent / "input"
 OUTPUT_DIR = SCRIPT_DIR.parent / "output"
 
+# ── DEPENDENCIES ──
+
 try:
     import phonenumbers
     from phonenumbers import COUNTRY_CODE_TO_REGION_CODE
@@ -61,6 +65,7 @@ try:
 except ImportError:
     sys.exit("Missing dependency: pip install pycountry")
 
+# ── COUNTRY LOOKUP ──
 
 NEW_COLUMN_NAME = "Derived Country (Dial Code)"
 
@@ -117,6 +122,9 @@ def dial_code_to_country(raw_dial_code: str) -> str:
     return result
 
 
+# ── CSV PROCESSING ──
+
+
 def process_csv(input_path: Path, output_path: Path, dial_code_column: str, encoding: str):
     with open(input_path, newline="", encoding=encoding) as f_in:
         # The Edmingle export has one junk title line ("Student's Export")
@@ -171,6 +179,8 @@ def process_csv(input_path: Path, output_path: Path, dial_code_column: str, enco
     print(f"Wrote {output_path} with new column '{NEW_COLUMN_NAME}'")
 
 
+# ── INPUT RESOLUTION ──
+
 DEFAULT_INPUT_GLOB = "Student-Export*.csv"
 
 
@@ -189,6 +199,9 @@ def find_default_input() -> Path:
     if len(candidates) > 1:
         print(f"Multiple exports found, using the most recent: {candidates[0].name}")
     return candidates[0]
+
+
+# ── MAIN ──
 
 
 def main():
